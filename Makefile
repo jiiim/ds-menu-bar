@@ -22,6 +22,12 @@ build:
 test:
 	swift test
 
+# ProcessManager drives a live child process across three queues, so the
+# sanitizer is the only thing that actually proves the main-queue confinement
+# the type asserts. Slow; not part of `test`.
+test-tsan:
+	swift test --sanitize=thread
+
 bundle: build
 	./scripts/create-app-bundle.sh debug "$(APP)" "$(VERSION)" "$(BUILD_NUMBER)" "$(APP_IDENTIFIER)" "$(MINIMUM_SYSTEM_VERSION)" ""
 
@@ -69,14 +75,15 @@ notarize: dmg
 	xcrun stapler validate "$(DMG)"
 	$(MAKE) checksum VERSION="$(VERSION)" BUILD_NUMBER="$(BUILD_NUMBER)" DIST_DIR="$(DIST_DIR)"
 
+# Checks the shipped artifact only. The app is verified inside the mounted
+# image, so this target needs no .build tree and can verify a downloaded
+# release as well as a local one.
 verify-release:
-	codesign --verify --deep --strict --verbose=2 "$(RELEASE_APP)"
-	codesign --display --verbose=4 "$(RELEASE_APP)"
 	hdiutil verify "$(DMG)"
 	codesign --verify --strict --verbose=2 "$(DMG)"
-	spctl --assess --type execute --verbose=4 "$(RELEASE_APP)"
 	spctl --assess --type open --context context:primary-signature --verbose=4 "$(DMG)"
 	xcrun stapler validate "$(DMG)"
+	./scripts/verify-dmg-app.sh "$(DMG)" "$(APP_NAME).app" "$(APP_IDENTIFIER)" "$(VERSION)" "$(BUILD_NUMBER)"
 	@test -f "$(DMG_SHA256)" || (echo 'checksum not found: $(DMG_SHA256)' >&2; exit 1)
 	@expected=$$(awk '{print $$1}' "$(DMG_SHA256)"); actual=$$(shasum -a 256 "$(DMG)" | awk '{print $$1}'); test "$$expected" = "$$actual"
 

@@ -11,6 +11,7 @@ import Foundation
 /// This class is *stateless with respect to the UI* — it reports results via
 /// closures so the owning ServerManager can publish @Published status changes
 /// on the main actor.
+@MainActor
 final class HealthChecker {
     // MARK: - Callbacks (wired by ServerManager)
 
@@ -38,13 +39,13 @@ final class HealthChecker {
 
     /// Poll cadence while starting/restarting — fast, so the UI confirms
     /// "running" promptly once the server answers.
-    private static let fastInterval = 2
+    private let fastInterval: Int
     /// Poll cadence once a run has been confirmed healthy.
-    private static let steadyInterval = 10
+    private let steadyInterval: Int
     /// How long a startup may run before the user gets an advisory. Chosen to be
     /// well past a normal large-model load, since it must never read as a
     /// deadline — a startup past this point is still perfectly valid.
-    static let stallAdvisoryInterval: TimeInterval = 600
+    let stallAdvisoryInterval: TimeInterval
 
     /// A private session rather than `URLSession.shared`. The shared session's
     /// cookie and cache storage gives the process a CFNetwork storage database,
@@ -67,9 +68,24 @@ final class HealthChecker {
     /// still being faulted back in, and nothing here knows a sleep happened.
     /// Three polls cost at most ~30s of extra detection latency, which nothing
     /// is waiting on, and the server they protect can take minutes to reload.
-    private static let failureThreshold = 3
+    let failureThreshold: Int
 
-    private var consecutiveFailures = 0
+    /// The defaults are the production values; every one of them is a duration
+    /// or a count that a test would otherwise have to wait out in real time.
+    init(
+        fastInterval: Int = 2,
+        steadyInterval: Int = 10,
+        stallAdvisoryInterval: TimeInterval = 600,
+        failureThreshold: Int = 3
+    ) {
+        self.fastInterval = fastInterval
+        self.steadyInterval = steadyInterval
+        self.stallAdvisoryInterval = stallAdvisoryInterval
+        self.failureThreshold = failureThreshold
+    }
+
+    /// Readable for tests; the run is only ever advanced or cleared here.
+    private(set) var consecutiveFailures = 0
     private var healthTimer: DispatchSourceTimer?
     private var healthURL: URL?
     private var startupBegan: Date?
@@ -95,7 +111,7 @@ final class HealthChecker {
         consecutiveFailures = 0
         startupBegan = Date()
         stallAdvisoryPosted = false
-        scheduleHealthTimer(interval: Self.fastInterval)
+        scheduleHealthTimer(interval: fastInterval)
     }
 
     /// Stop all timers and reset state. Called when the server is stopped or
@@ -154,8 +170,8 @@ final class HealthChecker {
                         s.startupBegan = nil
                         s.onHealthSuccess?()
                         s.scheduleHealthTimer(
-                            interval: Self.steadyInterval,
-                            firstDeadline: .now() + .seconds(Self.steadyInterval))
+                            interval: s.steadyInterval,
+                            firstDeadline: .now() + .seconds(s.steadyInterval))
                     }
                 } else {
                     let errMsg = error.map { $0.localizedDescription }
@@ -165,10 +181,10 @@ final class HealthChecker {
                     // stalled request cannot kill a working server.
                     if s.isRunning?() == true {
                         s.consecutiveFailures += 1
-                        if s.consecutiveFailures >= Self.failureThreshold {
+                        if s.consecutiveFailures >= s.failureThreshold {
                             s.consecutiveFailures = 0
                             s.onUnreachable?(
-                                "unreachable for \(Self.failureThreshold) checks: \(errMsg)"
+                                "unreachable for \(s.failureThreshold) checks: \(errMsg)"
                             )
                         }
                     }
@@ -177,7 +193,7 @@ final class HealthChecker {
                     // advisory interval, say so once — and keep polling.
                     if s.isStartingUp?() == true, !s.stallAdvisoryPosted,
                        let began = s.startupBegan,
-                       Date().timeIntervalSince(began) >= Self.stallAdvisoryInterval {
+                       Date().timeIntervalSince(began) >= s.stallAdvisoryInterval {
                         s.stallAdvisoryPosted = true
                         s.onStartupStalled?()
                     }

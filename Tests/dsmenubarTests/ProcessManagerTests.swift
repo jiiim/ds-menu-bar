@@ -6,6 +6,7 @@ import XCTest
 
 @testable import dsmenubar
 
+@MainActor
 final class ProcessManagerTests: XCTestCase {
     func testLaunchFailureReasonIgnoresHelpTextAfterParserError() throws {
         let directory = FileManager.default.temporaryDirectory
@@ -37,7 +38,6 @@ final class ProcessManagerTests: XCTestCase {
         )
     }
 
-    @MainActor
     func testRunningProcessRotatesLogAtConfiguredSize() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("dsmenubar-live-log-rotate-\(UUID().uuidString)")
@@ -95,7 +95,6 @@ final class ProcessManagerTests: XCTestCase {
     /// Toggling the menu-bar display must not disturb the running server, and
     /// enabling it mid-request must start at EOF rather than replaying the
     /// history already in the log.
-    @MainActor
     func testPerformanceMonitoringTogglesAgainstALiveServer() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("dsmenubar-live-performance-\(UUID().uuidString)")
@@ -185,6 +184,139 @@ final class ProcessManagerTests: XCTestCase {
     /// all drain before asserting.
     private func settle() async throws {
         try await Task.sleep(for: .milliseconds(300))
+    }
+
+    /// A launch that lands before the previous run's termination handler must
+    /// keep its own log handle and process reference. The handler used to read
+    /// `logFileHandle` at fire time and nil `process` unconditionally, so a
+    /// superseded run closed the live log and dropped the live child.
+    ///
+    /// ServerManager cannot reach this sequence — start(source:) refuses while
+    /// .stopping — so it is driven against ProcessManager directly.
+    func testSupersededTerminationLeavesTheNewRunAlone() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dsmenubar-supersede-\(UUID().uuidString)")
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: directory) }
+
+        let serverURL = directory.appendingPathComponent("ds4-server")
+        // Writes after a delay, so the write lands once the superseded handler
+        // has already run: a closed descriptor would lose it.
+        let script = """
+        #!/bin/sh
+        /bin/sleep 0.4
+        echo listening
+        exec /bin/sleep 30
+        """
+        try Data(script.utf8).write(to: serverURL)
+        try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: serverURL.path)
+
+        let modelURL = directory.appendingPathComponent("model.gguf")
+        try makeGGUF(architecture: "glm5-next").write(to: modelURL)
+
+        func configuration(log: String) -> ServerConfiguration.Config {
+            var config = ServerConfiguration.Config()
+            config.serverPath = serverURL.path
+            config.modelPath = modelURL.path
+            config.logPath = directory.appendingPathComponent(log).path
+            config.kvDiskEnabled = false
+            return config
+        }
+        let configB = configuration(log: "b.log")
+
+        let manager = ProcessManager()
+        var terminations = 0
+        manager.onTerminated = { _ in terminations += 1 }
+        defer {
+            if manager.isProcessRunning { manager.terminate() }
+        }
+
+        XCTAssertNotNil(manager.launch(configuration: configuration(log: "a.log")))
+        let pidA = try XCTUnwrap(manager.currentPID)
+
+        // One main-queue turn: stop, then start again before the first run's
+        // termination handler can land.
+        manager.terminate()
+        XCTAssertNotNil(manager.launch(configuration: configB))
+        let pidB = try XCTUnwrap(manager.currentPID)
+        XCTAssertNotEqual(pidA, pidB)
+
+        try await Task.sleep(for: .seconds(2))
+
+        XCTAssertTrue(manager.isProcessRunning, "the new run must still be tracked")
+        XCTAssertEqual(manager.currentPID, pidB, "the new run's process must not be nilled")
+
+        let log = try String(contentsOfFile: configB.logPath, encoding: .utf8)
+        XCTAssertTrue(log.contains("=== dsmenubar launch"), "header must reach the new log")
+        XCTAssertTrue(
+            log.contains("listening"),
+            "the new run's log descriptor must stay open for the server's own output"
+        )
+        XCTAssertEqual(
+            terminations, 0,
+            "the superseded run must close its own log without reporting a termination"
+        )
+
+        // The live run still reports normally when it is the one that ends.
+        manager.terminate()
+        try await Task.sleep(for: .seconds(1))
+        XCTAssertFalse(manager.isProcessRunning)
+        XCTAssertEqual(terminations, 1, "the current run must still report its termination")
+    }
+
+    /// A rotation that cannot run is a housekeeping failure, not a launch
+    /// failure: the server still starts against the oversized log. It used to
+    /// be swallowed by `try?`, which made a broken log directory look like a
+    /// server that simply said nothing.
+    func testStartupRotationFailureDoesNotStopTheLaunch() throws {
+        // root ignores the directory mode this relies on.
+        try XCTSkipIf(getuid() == 0, "requires a non-root user")
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dsmenubar-rotate-denied-\(UUID().uuidString)")
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        let logDirectory = directory.appendingPathComponent("logs")
+        try fileManager.createDirectory(at: logDirectory, withIntermediateDirectories: true)
+        defer {
+            try? fileManager.setAttributes([.posixPermissions: 0o755],
+                                           ofItemAtPath: logDirectory.path)
+            try? fileManager.removeItem(at: directory)
+        }
+
+        let serverURL = directory.appendingPathComponent("ds4-server")
+        try Data("#!/bin/sh\nexec /bin/sleep 5\n".utf8).write(to: serverURL)
+        try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: serverURL.path)
+
+        let modelURL = directory.appendingPathComponent("model.gguf")
+        try makeGGUF(architecture: "glm5-next").write(to: modelURL)
+
+        // Oversized log left by an earlier run: 2 MB against a 1 MB cap.
+        let logURL = logDirectory.appendingPathComponent("server.log")
+        try Data(repeating: 0x41, count: 2 * 1024 * 1024).write(to: logURL)
+        // Deny directory writes, so the rotation cannot create its temp file
+        // while the existing log stays open for append.
+        try fileManager.setAttributes([.posixPermissions: 0o500],
+                                      ofItemAtPath: logDirectory.path)
+
+        var config = ServerConfiguration.Config()
+        config.serverPath = serverURL.path
+        config.modelPath = modelURL.path
+        config.logPath = logURL.path
+        config.logMaxSizeMB = 1
+        config.kvDiskEnabled = false
+
+        let manager = ProcessManager()
+        defer { if manager.isProcessRunning { manager.terminate() } }
+
+        XCTAssertNotNil(manager.launch(configuration: config),
+                        "a denied rotation must not stop the launch")
+        XCTAssertTrue(manager.isProcessRunning)
+        XCTAssertFalse(
+            fileManager.fileExists(atPath: logDirectory.appendingPathComponent("server.log.1").path),
+            "rotation was denied, so no backup should exist"
+        )
     }
 
     func testRotateLogRetainsNewestBytesAndKeepsActiveDescriptorValid() throws {

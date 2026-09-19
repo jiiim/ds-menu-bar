@@ -9,7 +9,7 @@ import os.log
 // Passed to the termination callback so the orchestrator (ServerManager) can
 // decide the next status and whether to post a user notification.
 
-struct TerminationInfo {
+struct TerminationInfo: Sendable {
     /// Process exited with status 0.
     let clean: Bool
     /// A stop/restart we initiated (not a spontaneous crash).
@@ -29,6 +29,7 @@ struct TerminationInfo {
 /// UI* — it reports transitions via closures so the owning ServerManager can
 /// publish @Published status changes on the main actor.
 
+@MainActor
 final class ProcessManager {
     // MARK: - Callbacks (wired by ServerManager)
 
@@ -53,6 +54,10 @@ final class ProcessManager {
     // MARK: - Private state
 
     private var process: Process?
+    /// Identifies the launch that owns `process` and `logFileHandle`. A
+    /// termination handler carrying a stale ID belongs to a run that has already
+    /// been replaced, and must not finalize the current run's state.
+    private var currentRunID: UUID?
     private var logFileHandle: FileHandle?
     private var logWriteSource: DispatchSourceFileSystemObject?
     private var logSizeCheckScheduled = false
@@ -95,6 +100,7 @@ final class ProcessManager {
     /// launch failed (status is set via onStatusChange in that case).
     @discardableResult
     func launch(configuration: ServerConfiguration.Config) -> URL? {
+        dispatchPrecondition(condition: .onQueue(.main))
         // A new launch owns the lifecycle flags outright. Every path that reaches
         // here today runs after the termination handler has already cleared them
         // on the main queue, so this is belt-and-braces — but it means a future
@@ -233,11 +239,22 @@ final class ProcessManager {
            size >= maxLogBytes {
             let startupFD = open(logPathResolved, O_WRONLY | O_APPEND)
             if startupFD >= 0 {
-                try? Self.rotateLog(
-                    at: logPathResolved,
-                    maximumBytes: maxLogBytes,
-                    activeFileDescriptor: startupFD
-                )
+                do {
+                    try Self.rotateLog(
+                        at: logPathResolved,
+                        maximumBytes: maxLogBytes,
+                        activeFileDescriptor: startupFD
+                    )
+                } catch {
+                    // Not fatal — the launch proceeds against the oversized log
+                    // rather than refusing to start over a housekeeping failure.
+                    os_log(
+                        .error,
+                        log: log,
+                        "startup log rotation failed: %{public}@",
+                        String(describing: error)
+                    )
+                }
                 close(startupFD)
             }
         }
@@ -246,10 +263,13 @@ final class ProcessManager {
             cleanup()
             return failLaunch("Unable to open server log at \(logPathResolved)")
         }
-        logFileHandle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        // Bound locally as well as stored: the termination handler closes *this*
+        // handle, never whatever `logFileHandle` happens to hold when it fires.
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        logFileHandle = handle
         // Enforce owner-only perms even if the file pre-existed with looser modes.
         try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: logPathResolved)
-        proc.standardOutput = logFileHandle
+        proc.standardOutput = handle
 
         // Launch header — exactly what was run and where.
         writeLog("=== dsmenubar launch \(Self.timestamp()) ===\n")
@@ -266,7 +286,7 @@ final class ProcessManager {
 
         // Both stdout and stderr go directly to the log file — no pipe,
         // no dispatch source, no race between async reads and termination.
-        proc.standardError = logFileHandle
+        proc.standardError = handle
 
         // A trace records prompts, generated output, and tool calls, so it is at
         // least as sensitive as the log: create it owner-only before the server
@@ -281,14 +301,42 @@ final class ProcessManager {
             }
         }
 
+        // Identifies this launch for the termination handler. A later launch
+        // mints a new one, which is how a late handler recognizes that the
+        // state it would finalize is no longer its own.
+        let runID = UUID()
+
+        // Fires on a Foundation-internal queue. It touches none of this class's
+        // state there: every field below is main-queue-only, and closing the log
+        // from the callback queue raced `cleanup()` into a double close.
         proc.terminationHandler = { [weak self] p in
-            guard let self = self else { return }
             // Both streams write directly to the log file, so there's no pipe
             // to drain — the termination handler only needs to close the file.
             let clean = (p.terminationReason == .exit && p.terminationStatus == 0)
-            self.logFileHandle?.closeFile()
+            // Resolve the weak reference here rather than inside the hop: the
+            // main block then captures an immutable binding instead of this
+            // closure's mutable capture.
+            let manager = self
 
             DispatchQueue.main.async {
+                guard let self = manager else {
+                    handle.closeFile()
+                    return
+                }
+                // A relaunch may already own `logFileHandle` and `process` by
+                // the time this lands. Close only the handle this run opened and
+                // leave the newer run's state alone — finalizing it here would
+                // close the live log and drop the live process reference.
+                //
+                // Keyed on the run rather than on `process === p`, because
+                // `terminate()` nils `process` when it finds the child already
+                // reaped; that path still owes the orchestrator its callback.
+                guard self.currentRunID == runID else {
+                    handle.closeFile()
+                    return
+                }
+                self.currentRunID = nil
+                handle.closeFile()
                 self.stopLogMonitoring()
                 let wasIntentional = self.intentionalStop
                 let wasPendingRestart = self.pendingRestart
@@ -314,6 +362,7 @@ final class ProcessManager {
         do {
             try proc.run()
             process = proc
+            currentRunID = runID
             startLogMonitoring(
                 path: logPathResolved,
                 maximumBytes: maxLogBytes,
@@ -341,6 +390,7 @@ final class ProcessManager {
     /// start or restart — the caller should have cancelled any health/startup
     /// timers before invoking this.
     func terminate() {
+        dispatchPrecondition(condition: .onQueue(.main))
         restartTimer?.cancel(); restartTimer = nil
 
         guard let proc = process, proc.isRunning else {
@@ -373,6 +423,7 @@ final class ProcessManager {
     /// here — and none of the launch config is needed, since the relaunch is
     /// wired up by the orchestrator (onPortAvailable → its own start()).
     func restart() {
+        dispatchPrecondition(condition: .onQueue(.main))
         guard let proc = process, proc.isRunning else { return }
         pendingRestart = true
         intentionalStop = true
@@ -393,6 +444,7 @@ final class ProcessManager {
     /// When the port becomes available we invoke `onPortAvailable` rather than
     /// launching directly, so the orchestrator can set up health polling.
     func startWhenPortAvailable(host: String, port: Int) {
+        dispatchPrecondition(condition: .onQueue(.main))
         if Self.isListenPortAvailable(host: host, port: port) {
             onPortAvailable?()
             return
@@ -438,7 +490,7 @@ final class ProcessManager {
     /// be the one the server ends up on.
     ///
     /// Static and free of instance state so it can be unit-tested directly.
-    static func isListenPortAvailable(host: String, port: Int) -> Bool {
+    nonisolated static func isListenPortAvailable(host: String, port: Int) -> Bool {
         // Out of range, or 0 (which always binds to an ephemeral port and would
         // report a meaningless "available"): let launch surface the real error.
         guard let p = UInt16(exactly: port), p > 0 else { return true }
@@ -477,6 +529,7 @@ final class ProcessManager {
         process monitoredProcess: Process,
         fileDescriptor: Int32
     ) {
+        dispatchPrecondition(condition: .onQueue(.main))
         stopLogMonitoring()
         let monitorID = UUID()
         logMonitorID = monitorID
@@ -518,6 +571,7 @@ final class ProcessManager {
     }
 
     private func stopLogMonitoring() {
+        dispatchPrecondition(condition: .onQueue(.main))
         logWriteSource?.cancel()
         logWriteSource = nil
         logSizeCheckScheduled = false
@@ -562,8 +616,11 @@ final class ProcessManager {
         performanceQueue.async { [weak self, performanceReader] in
             let updates = performanceReader.readAvailable()
             guard !updates.isEmpty else { return }
+            // Resolved here so the main hop captures an immutable binding
+            // rather than this closure's mutable capture.
+            let manager = self
             DispatchQueue.main.async {
-                guard let self,
+                guard let self = manager,
                       self.performanceMonitoringEnabled,
                       self.logMonitorID == monitorID
                 else { return }
@@ -644,9 +701,13 @@ final class ProcessManager {
                     maximumBytes: maximumBytes
                 )
             }
+            // Resolved here so the main hop captures immutable bindings rather
+            // than this closure's mutable captures.
+            let manager = self
+            let rotatedProcess = monitoredProcess
             DispatchQueue.main.async {
-                guard let self,
-                      let monitoredProcess,
+                guard let self = manager,
+                      let monitoredProcess = rotatedProcess,
                       self.logRotationMonitorID == monitorID,
                       self.process === monitoredProcess,
                       monitoredProcess.isRunning
@@ -654,7 +715,7 @@ final class ProcessManager {
                     if case .success(let temporaryURL) = result {
                         try? FileManager.default.removeItem(at: temporaryURL)
                     }
-                    _ = monitoredProcess?.resume()
+                    _ = rotatedProcess?.resume()
                     return
                 }
 
@@ -683,7 +744,7 @@ final class ProcessManager {
 
     /// Preserve the newest bytes as `.1`, replace that backup atomically, and
     /// truncate the active inode so an inherited append descriptor stays valid.
-    static func rotateLog(
+    nonisolated static func rotateLog(
         at path: String,
         maximumBytes: Int,
         activeFileDescriptor: Int32
@@ -703,7 +764,7 @@ final class ProcessManager {
 
     /// Copy the newest complete segment while the server is suspended. The
     /// caller installs it only if this rotation still owns the active process.
-    private static func makeLogBackup(at path: String, maximumBytes: Int) throws -> URL {
+    nonisolated private static func makeLogBackup(at path: String, maximumBytes: Int) throws -> URL {
         let fm = FileManager.default
         let activeURL = URL(fileURLWithPath: path)
         let temporaryURL = URL(fileURLWithPath: path + ".1.tmp-\(UUID().uuidString)")
@@ -749,7 +810,7 @@ final class ProcessManager {
         return temporaryURL
     }
 
-    private static func installLogBackup(
+    nonisolated private static func installLogBackup(
         _ temporaryURL: URL,
         at path: String,
         activeFileDescriptor: Int32
@@ -772,15 +833,28 @@ final class ProcessManager {
     /// already exists is left as-is: the log and trace paths are user-chosen, and
     /// silently narrowing the permissions of an existing directory — which may be
     /// a shared or project folder — is not this app's call to make.
-    static func createOwnerOnlyDirectory(_ directory: String, fm: FileManager) {
+    nonisolated static func createOwnerOnlyDirectory(_ directory: String, fm: FileManager) {
         guard !directory.isEmpty, !fm.fileExists(atPath: directory) else { return }
         try? fm.createDirectory(atPath: directory, withIntermediateDirectories: true,
                                 attributes: [.posixPermissions: 0o700])
     }
 
     private func writeLog(_ s: String) {
+        dispatchPrecondition(condition: .onQueue(.main))
         guard let handle = logFileHandle, let data = s.data(using: .utf8) else { return }
-        try? handle.write(contentsOf: data)
+        do {
+            try handle.write(contentsOf: data)
+        } catch {
+            // Best-effort, but a silent failure here leaves a log that looks
+            // merely empty — which reads as "the server said nothing" rather
+            // than "the app could not write".
+            os_log(
+                .error,
+                log: log,
+                "unable to write to server log: %{public}@",
+                String(describing: error)
+            )
+        }
     }
 
     /// Truncate the active log in place so a running server can keep writing to
@@ -893,8 +967,10 @@ final class ProcessManager {
     /// timers, process reference). Called after launch failure or when the
     /// orchestrator decides not to restart.
     func cleanup() {
+        dispatchPrecondition(condition: .onQueue(.main))
         stopLogMonitoring()
         process = nil
+        currentRunID = nil
         failureReason = nil
         logFileHandle?.closeFile()
         logFileHandle = nil

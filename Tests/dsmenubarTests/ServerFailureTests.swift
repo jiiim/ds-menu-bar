@@ -5,8 +5,8 @@ import XCTest
 
 @testable import dsmenubar
 
+@MainActor
 final class ServerFailureTests: XCTestCase {
-    @MainActor
     func testEarlyExitReportsServerDiagnosticInsteadOfHelpExample() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("dsmenubar-early-exit-\(UUID().uuidString)")
@@ -114,7 +114,6 @@ final class ServerFailureTests: XCTestCase {
         XCTAssertTrue(failure.notificationBody.hasSuffix("…"))
     }
 
-    @MainActor
     func testSettingsNavigationConsumesPendingDestination() {
         UserDefaults.standard.removeObject(forKey: SettingsNavigation.pendingPaneKey)
         XCTAssertNil(SettingsNavigation.consumePendingPane())

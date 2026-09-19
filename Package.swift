@@ -4,6 +4,14 @@
 
 import PackageDescription
 
+/// Swift 5 language mode with complete data-race checking. The checks are
+/// diagnostics here, not errors: the point is to catch cross-queue access to
+/// main-queue state (see ProcessManager, HealthChecker, ServerManager) without
+/// taking on the unrelated source breaks that Swift 6 language mode brings.
+let strictConcurrency: [SwiftSetting] = [
+    .enableUpcomingFeature("StrictConcurrency"),
+]
+
 let package = Package(
     name: "dsmenubar",
     platforms: [
@@ -11,11 +19,13 @@ let package = Package(
     ],
     targets: [
         .executableTarget(
-            name: "dsmenubar"
+            name: "dsmenubar",
+            swiftSettings: strictConcurrency
         ),
         .testTarget(
             name: "dsmenubarTests",
-            dependencies: ["dsmenubar"]
+            dependencies: ["dsmenubar"],
+            swiftSettings: strictConcurrency
         ),
     ]
 )

@@ -50,6 +50,7 @@ extension ServerStatus {
 /// @Published `status` that the UI observes, and exposes config properties
 /// for SettingsView to bind to.
 
+@MainActor
 final class ServerManager: ObservableObject {
     // MARK: - Components
 
@@ -100,7 +101,10 @@ final class ServerManager: ObservableObject {
         refreshKeepAwake()
     }
 
-    deinit {
+    /// Isolated because `ExternalPowerMonitor.stop()` removes a source from the
+    /// main run loop; doing that from whichever thread drops the last reference
+    /// is not safe, and a nonisolated deinit cannot touch either property.
+    isolated deinit {
         externalPower.stop()
         idleSleepAssertion.release()
     }
@@ -201,7 +205,7 @@ final class ServerManager: ObservableObject {
         // opening Console. Nothing is terminated; polling continues.
         healthChecker.onStartupStalled = { [weak self] in
             guard let self = self else { return }
-            let minutes = Int(HealthChecker.stallAdvisoryInterval / 60)
+            let minutes = Int(self.healthChecker.stallAdvisoryInterval / 60)
             let detail = self.lastLogReason()
             let body = detail.isEmpty
                 ? "Still starting after \(minutes) min. This is normal for a large model; cancel from the menu if it looks stuck."
@@ -384,17 +388,35 @@ final class ServerManager: ObservableObject {
         static let invalid = ApplyResult(kind: .invalid, warning: nil)
     }
 
+    /// The GGUF inspection `applyConfiguration` needs in order to validate a
+    /// snapshot. Reading these opens and parses up to three files, so a caller
+    /// that already did that work off the main thread should pass it in rather
+    /// than make the main thread repeat it.
+    struct InspectedProfiles {
+        let model: DS4ModelProfile
+        let support: DS4SupportProfile
+        let vision: DS4VisionProfile
+    }
+
     /// Apply a complete Settings snapshot. A live server is restarted so the
     /// new command line takes effect; a stopped server uses it on its next start.
+    ///
+    /// `inspected` is the profiles for `newConfig`'s model, support, and vision
+    /// paths. Passing nil re-reads them here, on whatever thread called — which
+    /// for a Settings Apply is the main one.
     @discardableResult
-    func applyConfiguration(_ newConfig: ServerConfiguration.Config) -> ApplyResult {
+    func applyConfiguration(
+        _ newConfig: ServerConfiguration.Config,
+        inspected: InspectedProfiles? = nil
+    ) -> ApplyResult {
         let serverDirectory = DS4ServerCommand.serverDirectory(for: newConfig.serverPath)
-        let modelProfile = GGUFModelInspector.profile(for: newConfig.modelPath, relativeTo: serverDirectory)
-        let supportProfile = GGUFModelInspector.supportProfile(
+        let modelProfile = inspected?.model
+            ?? GGUFModelInspector.profile(for: newConfig.modelPath, relativeTo: serverDirectory)
+        let supportProfile = inspected?.support ?? GGUFModelInspector.supportProfile(
             for: newConfig.mtpPath,
             relativeTo: serverDirectory
         )
-        let visionProfile = GGUFModelInspector.visionProfile(
+        let visionProfile = inspected?.vision ?? GGUFModelInspector.visionProfile(
             for: newConfig.visionPath,
             relativeTo: serverDirectory
         )

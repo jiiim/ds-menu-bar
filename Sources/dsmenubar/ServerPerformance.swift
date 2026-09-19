@@ -250,7 +250,12 @@ struct ServerPerformanceLogParser {
 /// Reads only bytes appended after monitoring starts. Rotation and log clearing
 /// truncate the active inode, so a smaller file resets both the offset and any
 /// partial line left by the prior contents.
-final class ServerPerformanceLogReader {
+///
+/// Unchecked because the confinement is by queue, not by type: every caller in
+/// ProcessManager touches this only inside `performanceQueue.async`, which is
+/// serial, so the file handle, offset, and parser are never reached
+/// concurrently. Any new call site must hold to that.
+final class ServerPerformanceLogReader: @unchecked Sendable {
     private var handle: FileHandle?
     private var offset: UInt64 = 0
     private var parser = ServerPerformanceLogParser()

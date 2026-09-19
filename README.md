@@ -8,17 +8,37 @@
 
 ## Overview
 
-DS Menu Bar is a native macOS menu bar app for starting, stopping, and
-configuring one local [`ds4-server`](https://github.com/antirez/ds4) process.
-It keeps [DwarfStar](https://github.com/antirez/ds4) server status and common
-controls available without keeping a terminal window open.
+DS Menu Bar is a native macOS control surface for your existing
+[DwarfStar](https://github.com/antirez/ds4) setup. It starts, stops,
+configures, and monitors one local `ds4-server` process without keeping a
+terminal window open.
 
-DS Menu Bar manages one Metal server on the Mac where the app is running. It
-does not manage remote, distributed, Linux, CUDA, or ROCm servers.
+DS Menu Bar manages a single `ds4-server` process on your Mac where the app is
+running. It does not manage remote, distributed, Linux, CUDA, or ROCm servers.
+It does not download, build, bundle, or update `ds4-server` or model files.
 
 <p align="center">
   <img src="docs/images/menu-bar-menu.png" width="325" alt="DS Menu Bar menu showing generation speed, server status, and the Keep Awake While Server Runs control">
 </p>
+
+## Built for user-managed setups
+
+DS Menu Bar works with your existing DwarfStar environment instead of creating
+one of its own. This includes setups where you compile upstream commits, keep
+multiple server builds, download selected model files yourself, or produce
+your own compatible GGUFs.
+
+- Choose the exact `ds4-server` executable and model files to run.
+- Keep executables, models, logs, traces, and caches in locations you control.
+- Inspect the complete generated command before applying a configuration.
+- Change server builds or models without adopting an app-managed download or
+  update workflow.
+- Use the resulting local endpoint with any client that speaks one of the
+  HTTP APIs `ds4-server` serves: OpenAI, Responses, Anthropic, or completion.
+
+The app stores its configuration and manages only the server process it
+launches. It does not copy, rename, replace, or delete the selected server or
+model files.
 
 ## What it does
 
@@ -41,18 +61,19 @@ does not manage remote, distributed, Linux, CUDA, or ROCm servers.
 
 - macOS 26 or later
 - An Apple silicon Mac
-- A separately built `ds4-server` executable ([see the version compatibility
-  note below](#ds4-server-version-compatibility))
-- A compatible DwarfStar-specific main GGUF model
+- A compatible `ds4-server` executable that you build or manage separately
+  ([see the version compatibility note](#ds4-server-version-compatibility))
+- A compatible DwarfStar-specific main GGUF that you download, create, or
+  manage separately
 
 Follow the [DwarfStar project](https://github.com/antirez/ds4) for server build
-instructions and model information. DS Menu Bar does not include `ds4-server`
-or model files.
+instructions and model-format information. DS Menu Bar does not include
+`ds4-server` or model files.
 
 ### ds4-server version compatibility
 
 > [!IMPORTANT]
-> At the time of the DS Menu Bar v0.0.4 release, `ds4` does not publish
+> At the time of the DS Menu Bar v0.0.5 release, `ds4` does not publish
 > versioned releases. Compatibility is therefore tracked against specific
 > commits on its `main` branch, and DS Menu Bar is updated as upstream changes
 > are reviewed. The latest known compatible commit is
@@ -73,6 +94,44 @@ arbitrary GGUF models are not supported.
 
 ## Install
 
+Both methods install the same signed and notarized build. Homebrew is
+recommended because it also handles updates.
+
+### Homebrew (recommended)
+
+```sh
+brew install --cask jiiim/tap/ds-menu-bar
+```
+
+The cask requires an Apple silicon Mac running macOS 26 or later and refuses
+to install elsewhere.
+
+#### Updating
+
+Refresh Homebrew's copy of the tap, then check whether a newer release exists:
+
+```sh
+brew update
+brew outdated --cask ds-menu-bar
+```
+
+If the cask is listed as outdated, install the new version:
+
+```sh
+brew upgrade --cask ds-menu-bar
+```
+
+The upgrade quits DS Menu Bar if it is running, which stops the `ds4-server`
+process it manages. Your settings, including the selected executable and model
+paths, are stored outside the app bundle and survive the upgrade. Reopen
+DS Menu Bar and start the server again when the upgrade finishes.
+
+Review the [ds4-server version compatibility](#ds4-server-version-compatibility)
+note after upgrading, in case the new release tracks a different upstream
+commit than the `ds4-server` build you have.
+
+### DMG
+
 1. Download the DMG and its `.sha256` file from the
    [latest release](https://github.com/jiiim/ds-menu-bar/releases/latest).
 2. Optional: verify the download from the directory containing both files, in
@@ -85,15 +144,22 @@ arbitrary GGUF models are not supported.
 3. Open the DMG and drag **DS Menu Bar** onto the **Applications** shortcut.
 4. Open **DS Menu Bar** from `/Applications`.
 
+Updating a DMG installation means repeating these steps for each release.
+Quit DS Menu Bar before replacing the app in `/Applications`.
+
 Release DMGs are signed with Developer ID and notarized by Apple for normal
 Gatekeeper validation.
 
 ## First run
 
-The setup window asks for two files:
+The setup window connects DS Menu Bar to two files from your existing setup:
 
 1. Your `ds4-server` executable.
 2. The main GGUF model that the server should load.
+
+The files remain in their existing locations and continue to be managed by
+you. DS Menu Bar stores their paths in its configuration and uses them when
+constructing the server command.
 
 After setup, use the star icon in the menu bar to start or stop the server,
 open its log, or open Settings. Applying settings while the server is running
@@ -171,8 +237,24 @@ Source builds use an ad hoc signature and are intended for local development.
 
 ## Uninstall
 
-Disable **Launch at login** in Settings, quit DS Menu Bar, and move
-`/Applications/DS Menu Bar.app` to the Trash.
+Disable **Launch at login** in Settings and quit DS Menu Bar first, then
+remove the app.
+
+For a Homebrew installation:
+
+```sh
+brew uninstall --cask ds-menu-bar
+```
+
+Add `--zap` to also remove DS Menu Bar's preferences and its default log
+directory:
+
+```sh
+brew uninstall --zap --cask ds-menu-bar
+```
+
+For a DMG installation, move `/Applications/DS Menu Bar.app` to the Trash.
+Neither method touches your `ds4-server` executable or model files.
 
 ## Logo and App Icon
 
