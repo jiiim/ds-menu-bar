@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-FileCopyrightText: Copyright 2026 James Martin
+# SPDX-FileCopyrightText: Copyright James Martin and DS Menu Bar contributors
 # SPDX-License-Identifier: MIT
 
 # Verify the app users actually receive: the copy inside the disk image, not

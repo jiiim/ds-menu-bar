@@ -269,7 +269,7 @@ While `ds4-server` is starting, the star oscillates between solid and outline.
 ## License
 
 DS Menu Bar source code and original bundled assets are available under the
-[MIT License](LICENSE). Copyright 2026 James Martin.
+[MIT License](LICENSE). Copyright James Martin and DS Menu Bar contributors.
 
 DwarfStar, `ds4-server`, GGUF models, macOS, and Xcode are separate works
 and are not licensed by this project. Refer to their respective terms and

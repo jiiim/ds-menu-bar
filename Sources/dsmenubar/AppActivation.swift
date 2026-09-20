@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2026 James Martin
+// SPDX-FileCopyrightText: Copyright James Martin and DS Menu Bar contributors
 // SPDX-License-Identifier: MIT
 
 import AppKit

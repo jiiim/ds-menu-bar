@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2026 James Martin
+// SPDX-FileCopyrightText: Copyright James Martin and DS Menu Bar contributors
 // SPDX-License-Identifier: MIT
 
 import AppKit
@@ -35,13 +35,15 @@ struct AboutView: View {
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
 
-            Text("© 2026 James Martin")
+            // Markdown must stay a string literal here too — see above. The
+            // rendered text is unchanged, so the frame width still holds.
+            Text("© James Martin and [DS Menu Bar contributors](https://github.com/jiiim/ds-menu-bar/graphs/contributors)")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
         }
         .multilineTextAlignment(.center)
         .padding(20)
-        .frame(width: 260)
+        .frame(width: 270)
         .fixedSize()
     }
 }

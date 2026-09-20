@@ -4,10 +4,11 @@ version = 1
 path = [
     ".gitignore",
     "Makefile",
+    "CONTRIBUTING.md",
     "README.md",
     "Resources/AppIcon.icns",
     "Resources/Info.plist",
     "docs/images/*.png",
 ]
-SPDX-FileCopyrightText = "Copyright 2026 James Martin"
+SPDX-FileCopyrightText = "Copyright James Martin and DS Menu Bar contributors"
 SPDX-License-Identifier = "MIT"

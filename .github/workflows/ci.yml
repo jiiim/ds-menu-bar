@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright 2026 James Martin
+# SPDX-FileCopyrightText: Copyright James Martin and DS Menu Bar contributors
 # SPDX-License-Identifier: MIT
 
 name: CI
@@ -30,6 +30,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Full history: the attribution check reads commit messages across
+          # the pull request's range, which a shallow clone does not contain.
+          fetch-depth: 0
 
       - name: Show toolchain
         run: |
@@ -38,6 +41,15 @@ jobs:
           xcodebuild -version
           swift --version
           test "$(uname -m)" = arm64
+
+      - name: Check copyright notices
+        run: ./scripts/check-copyright.sh
+
+      - name: Check commit attribution
+        if: github.event_name == 'pull_request'
+        run: |
+          ./scripts/check-commit-attribution.sh \
+            "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
 
       - name: Check licensing
         run: |
