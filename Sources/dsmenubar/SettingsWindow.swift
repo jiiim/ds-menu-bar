@@ -848,14 +848,23 @@ struct SettingsView: View {
 
             serverValidationError = checked.serverError
             modelValidationError = checked.modelError
-            validatedServerPath = candidate.serverPath
+            // `checkedConfig`, not `candidate`: a reinspection pass above may
+            // have re-run these checks against restored paths, and the record
+            // has to name the files `checked` actually describes.
+            validatedServerPath = checkedConfig.serverPath
             validatedServerIdentity = checked.serverIdentity
-            validatedModelPath = candidate.modelPath
+            validatedModelPath = checkedConfig.modelPath
             modelProfile = checked.model
             supportProfile = checked.support
             visionProfile = checked.vision
             if checked.modelError == nil {
-                loadedModelKey = key
+                // Recomputed from `checkedConfig` for the same reason as the
+                // records above: the key must name the pair actually loaded,
+                // not the one the first pass happened to inspect.
+                loadedModelKey = ServerConfiguration.Config.modelKey(
+                    for: checkedConfig.modelPath,
+                    serverPath: checkedConfig.serverPath
+                )
             }
             draft = checkedConfig
             validationErrors = errors
@@ -910,9 +919,12 @@ struct SettingsView: View {
         let result = server.applyConfiguration(config, inspected: inspected)
         switch result.kind {
         case .invalid:
-            // The manager can still refuse a draft this view just validated —
-            // a model replaced between the two passes, for example. Show the
-            // field rather than leaving Apply looking like it did nothing.
+            // Defensive. The manager re-runs the same pure validation over the
+            // profiles passed in above, so it has nothing this view did not
+            // already see — a file replaced after that inspection is caught by
+            // ProcessManager.launch's preflight, which re-reads every path,
+            // rather than here. Should the two ever disagree, show the field
+            // rather than leaving Apply looking like it did nothing.
             let errors = settingsValidationErrors(for: config)
             validationErrors = errors
             showNotice(

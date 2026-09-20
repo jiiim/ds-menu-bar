@@ -146,10 +146,17 @@ final class HealthChecker {
     /// The timer fires on a background queue, so the request is issued from the
     /// main queue instead: every field this reads or writes lives there, and the
     /// generation stamped on the request has to be the one current at issue time.
-    private func checkHealth() {
+    ///
+    /// `nonisolated` states what is already true. The timer's event handler is a
+    /// non-Sendable closure, so the compiler infers this class's main-actor
+    /// isolation for it and then checks nothing — the handler still runs on a
+    /// background queue. Declared this way, the hop below is the only way in,
+    /// and an edit that reaches for main-queue state from here is a diagnostic
+    /// rather than a silent race.
+    nonisolated private func checkHealth() {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            self.issueHealthRequest()
+            MainActor.assumeIsolated { self.issueHealthRequest() }
         }
     }
 

@@ -28,10 +28,23 @@ final class HealthCheckerTests: XCTestCase {
         private let lock = NSLock()
         private var _statusCode: Int? = 200
         private var stopped = false
+        /// Guards the reply so a test can run assertions while a request is
+        /// genuinely in flight, rather than racing the response.
+        private let gate = NSCondition()
+        private var holdingResponses = false
+        private var _requestsRead = 0
 
         var statusCode: Int? {
             get { lock.withLock { _statusCode } }
             set { lock.withLock { _statusCode = newValue } }
+        }
+
+        /// Requests whose line has been read — i.e. the poller really issued
+        /// one, rather than being turned away by an earlier guard.
+        var requestsRead: Int {
+            gate.lock()
+            defer { gate.unlock() }
+            return _requestsRead
         }
 
         init() {
@@ -74,6 +87,10 @@ final class HealthCheckerTests: XCTestCase {
                 // socket nobody read before we reply.
                 var buffer = [UInt8](repeating: 0, count: 1024)
                 _ = recv(client, &buffer, buffer.count, 0)
+                gate.lock()
+                _requestsRead += 1
+                while holdingResponses { gate.wait() }
+                gate.unlock()
                 if let code = statusCode {
                     let response = "HTTP/1.1 \(code) \(code == 200 ? "OK" : "Error")\r\n"
                         + "Content-Length: 0\r\nConnection: close\r\n\r\n"
@@ -86,8 +103,23 @@ final class HealthCheckerTests: XCTestCase {
 
         var url: URL { URL(string: "http://127.0.0.1:\(port)/v1/models")! }
 
+        /// Accept and read, but do not reply until `releaseResponses()`.
+        func holdResponses() {
+            gate.lock()
+            holdingResponses = true
+            gate.unlock()
+        }
+
+        func releaseResponses() {
+            gate.lock()
+            holdingResponses = false
+            gate.broadcast()
+            gate.unlock()
+        }
+
         func stop() {
             lock.withLock { stopped = true }
+            releaseResponses()
             close(listenFD)
         }
     }
@@ -201,6 +233,7 @@ final class HealthCheckerTests: XCTestCase {
     func testResponsesLandingAfterStopAreDiscarded() {
         let server = StubServer()
         server.statusCode = 500
+        server.holdResponses()
         defer { server.stop() }
 
         let checker = HealthChecker(fastInterval: 1, failureThreshold: 1)
@@ -212,9 +245,16 @@ final class HealthCheckerTests: XCTestCase {
         checker.onUnreachable = { _ in reports += 1 }
 
         checker.startPolling(url: server.url)
-        // Stop in the same turn the request is issued, so its response is
-        // guaranteed to land against a superseded generation.
+        // Wait for a request the server is holding unanswered. Stopping before
+        // one is in flight would test the nil-URL guard in `issueHealthRequest`
+        // instead: no request, so no response for the generation stamp to
+        // discard.
+        spin { server.requestsRead > 0 }
+        XCTAssertGreaterThan(server.requestsRead, 0, "no request was ever issued")
+
+        // Supersede the run, then let the 500 it is waiting on come back.
         checker.stop()
+        server.releaseResponses()
 
         spin(timeout: 1.5) { reports > 0 }
         XCTAssertEqual(reports, 0, "a response from a stopped run must not act")

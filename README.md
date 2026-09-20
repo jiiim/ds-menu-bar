@@ -73,12 +73,12 @@ instructions and model-format information. DS Menu Bar does not include
 ### ds4-server version compatibility
 
 > [!IMPORTANT]
-> At the time of the DS Menu Bar v0.0.5 release, `ds4` does not publish
+> At the time of the DS Menu Bar v0.0.6 release, `ds4` does not publish
 > versioned releases. Compatibility is therefore tracked against specific
 > commits on its `main` branch, and DS Menu Bar is updated as upstream changes
 > are reviewed. The latest known compatible commit is
-> [`8db1d1d`](https://github.com/antirez/ds4/commit/8db1d1d155cb0400a86a86b9c62d0defb3a6148b)
-> (September 16, 2026). Newer versions of `ds4-server` may also work, but
+> [`0aaea5a`](https://github.com/antirez/ds4/commit/0aaea5a238fb41a35106a551e73c8409dfb751ac)
+> (September 20, 2026). Newer versions of `ds4-server` may also work, but
 > compatibility is not guaranteed.
 
 ## Supported models

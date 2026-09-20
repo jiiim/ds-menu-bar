@@ -404,6 +404,11 @@ final class ServerManager: ObservableObject {
     /// `inspected` is the profiles for `newConfig`'s model, support, and vision
     /// paths. Passing nil re-reads them here, on whatever thread called — which
     /// for a Settings Apply is the main one.
+    ///
+    /// Passing them in reads no file at this point, so a GGUF replaced between
+    /// the caller's inspection and this call is validated against the older
+    /// profile. `ProcessManager.launch` re-reads and re-validates every path
+    /// before the child starts, which is where that is caught.
     @discardableResult
     func applyConfiguration(
         _ newConfig: ServerConfiguration.Config,
