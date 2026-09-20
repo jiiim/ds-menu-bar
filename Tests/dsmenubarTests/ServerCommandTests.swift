@@ -624,6 +624,30 @@ final class ServerCommandTests: XCTestCase {
         }
     }
 
+    /// Ports 1–1023 are privileged. ds4-server runs as a child of the app,
+    /// with the app's uid, so a bind there always fails with EACCES — which
+    /// arrives as a line in the server log long after Settings could have said
+    /// so. Validation owns the whole unusable range, not just the arithmetic
+    /// one above 65535.
+    func testValidationRejectsPrivilegedPorts() {
+        var config = ServerConfiguration.Config()
+        config.serverPath = "/opt/ds4/ds4-server"
+
+        for port in [1, 80, 443, 1_023] {
+            config.port = port
+            XCTAssertEqual(
+                config.validationErrors(modelProfile: .unknown)[.port],
+                "Port must be between 1024 and 65535",
+                "\(port)"
+            )
+        }
+
+        for port in [1_024, 8_000, 65_535] {
+            config.port = port
+            XCTAssertNil(config.validationErrors(modelProfile: .unknown)[.port], "\(port)")
+        }
+    }
+
     func testValidationRejectsParserLimitsAndConflicts() {
         var config = ServerConfiguration.Config()
         config.port = 65_536

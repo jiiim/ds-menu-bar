@@ -299,7 +299,11 @@ enum DS4ConfigurationLimits {
     static let maxParserInteger = Int(Int32.max)
     static let maxParserUnsignedInteger = UInt64(UInt32.max)
     static let maxGiB = UInt64.max / (1_024 * 1_024 * 1_024)
-    static let minPort = 1
+    /// Ports below 1024 are privileged: binding one needs root, and the app
+    /// launches ds4-server as a plain child of itself, so the whole range is
+    /// unreachable. Offering it in Settings only buys an EACCES in the server
+    /// log, well after the user has left the field that caused it.
+    static let minPort = 1_024
     static let maxPort = 65_535
     static let minPowerPercent = 1
     static let maxPowerPercent = 100
