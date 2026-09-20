@@ -63,7 +63,7 @@ enum DS4ServerCommand {
         ]
         args += [
             "--ctx", "\(configuration.ctxSize)",
-            "--host", configuration.host,
+            "--host", normalizedHost(configuration.host),
             "--port", "\(configuration.port)",
             "--power", "\(configuration.powerPercent)"
         ]
@@ -355,22 +355,74 @@ enum DS4ServerCommand {
         return String(Int(value))
     }
 
-    /// The host the app should probe for readiness when the server is
-    /// configured with a wildcard bind address.
+    /// The configured host reduced to the bare form a socket expects.
     ///
-    /// `--host 0.0.0.0` (or `::`) tells ds4-server to listen on every
-    /// interface, but it is not a connectable destination: CFNetwork rejects
-    /// a request URL whose host is the unspecified address outright with
-    /// `NSURLErrorBadURL`, so a health probe built from the configured host
-    /// would fail forever and the menu would stay on "Starting…" even though
-    /// the server is healthy and serving. A wildcard listener accepts loopback
-    /// too, so probe the matching loopback address instead.
-    static func healthProbeHost(for configuredHost: String) -> String {
-        switch configuredHost {
-        case "0.0.0.0": return "127.0.0.1"
-        case "::": return "[::1]"
-        default: return configuredHost
+    /// The Settings host field is free text, so an IPv6 address can arrive in
+    /// its URL spelling, `[::]`. Brackets are URL syntax for separating the
+    /// address from the port — they are not part of the address, and
+    /// `getaddrinfo` rejects them with `EAI_NONAME`. Left in place they make
+    /// the pre-relaunch port wait skip silently (an unresolvable host reads as
+    /// "port free"), and they reach `--host` as a spelling ds4-server has no
+    /// reason to accept. Strip them once, here, so everything downstream of
+    /// the configuration sees a single spelling.
+    static func normalizedHost(_ configuredHost: String) -> String {
+        guard configuredHost.count > 2,
+              configuredHost.hasPrefix("["), configuredHost.hasSuffix("]") else {
+            return configuredHost
         }
+        return String(configuredHost.dropFirst().dropLast())
+    }
+
+    /// The URL host component to probe for readiness, given the configured
+    /// bind host.
+    ///
+    /// A wildcard bind address tells ds4-server to listen on every interface,
+    /// but it is not a connectable destination: CFNetwork rejects `0.0.0.0`
+    /// before the request leaves the process (`NSURLErrorBadURL`), and the
+    /// IPv6 wildcard builds a valid URL that never connects. Either way the
+    /// probe fails for as long as the server runs, and because a failing probe
+    /// during startup means "still loading", the menu stays on "Starting…"
+    /// against a server that is healthy and serving. A wildcard listener
+    /// accepts loopback too, so probe that instead.
+    ///
+    /// The wildcard is recognised by parsing the address rather than matching
+    /// text. `::`, `[::]`, `[::0]`, and `[0:0:0:0:0:0:0:0]` are one address
+    /// written four ways, and a list of literals only ever covers the
+    /// spellings someone thought to write down.
+    ///
+    /// The result is a URL host component, so IPv6 comes back bracketed —
+    /// `URLComponents.host` yields a nil URL for a bare `::1`. Never hand it
+    /// to `getaddrinfo`; `normalizedHost(_:)` is the bare form.
+    static func healthProbeURLHost(for configuredHost: String) -> String {
+        let bare = normalizedHost(configuredHost)
+
+        var v4 = in_addr()
+        if inet_pton(AF_INET, bare, &v4) == 1 {
+            return v4.s_addr == 0 ? "127.0.0.1" : bare
+        }
+
+        var v6 = in6_addr()
+        if inet_pton(AF_INET6, bare, &v6) == 1 {
+            let octets = withUnsafeBytes(of: v6) { Array($0) }
+            if octets.allSatisfy({ $0 == 0 }) {
+                return "[::1]"
+            }
+            // ::ffff:0.0.0.0 is the same wildcard wearing an IPv4-mapped
+            // prefix, and CFNetwork rejects it exactly as it rejects a bare
+            // 0.0.0.0 (`NSURLErrorBadURL`). Such a listener answers on the
+            // IPv4 loopback, so that is the address to probe.
+            let isIPv4Mapped = octets[0..<10].allSatisfy { $0 == 0 }
+                && octets[10] == 0xff && octets[11] == 0xff
+            if isIPv4Mapped && octets[12...].allSatisfy({ $0 == 0 }) {
+                return "127.0.0.1"
+            }
+            return "[\(bare)]"
+        }
+
+        // A name, not an address. Resolution decides where it points, and a
+        // name never denotes the unspecified address — but it still comes back
+        // in the one spelling `normalizedHost(_:)` promises.
+        return bare
     }
 
     private static func shellQuote(_ value: String) -> String {

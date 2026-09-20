@@ -170,6 +170,22 @@ final class PortAvailabilityTests: XCTestCase {
             "a listener on 127.0.0.1 must be seen when probing the name localhost")
     }
 
+    /// A host in URL form must probe exactly like its bare form. getaddrinfo
+    /// rejects the brackets with EAI_NONAME, and an unresolvable host is
+    /// reported available — so without normalization a bracketed host would
+    /// call a held port free, skip the pre-relaunch wait, and hand the
+    /// replacement server an EADDRINUSE. Spelled with an IPv4 address so the
+    /// test needs no IPv6 loopback; `[::]` and `[::1]` are what a user types,
+    /// and they resolve the same way.
+    func testBracketedHostIsProbedLikeItsBareForm() {
+        let (fd, port) = makeListener()
+        defer { close(fd) }
+
+        XCTAssertFalse(
+            ProcessManager.isListenPortAvailable(host: "[127.0.0.1]", port: Int(port)),
+            "a bracketed host must still see the listener holding the port")
+    }
+
     /// A host that does not resolve is reported available: launch's own error
     /// names the bad host, whereas a probe that reported "unavailable" would
     /// leave the restart waiting on a port that will never come free.

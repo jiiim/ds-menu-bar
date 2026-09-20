@@ -658,11 +658,11 @@ final class ProcessManagerTests: XCTestCase {
         )
     }
 
-    /// `--host 0.0.0.0` is a bind wildcard, not a connectable destination:
-    /// CFNetwork rejects a request URL for the unspecified address outright
-    /// (`NSURLErrorBadURL`), so a probe built from the configured host would
-    /// never succeed and the menu would stay on "Starting…" against a healthy
-    /// server. The probe must target loopback instead.
+    /// A bind wildcard is not a connectable destination, and the spellings
+    /// fail differently: CFNetwork rejects `0.0.0.0` outright
+    /// (`NSURLErrorBadURL`), while `[::]` builds a valid URL that never
+    /// connects. Both would leave the menu on "Starting…" against a healthy
+    /// server, so the probe must target loopback instead.
     func testLaunchWithWildcardHostReturnsLoopbackHealthURL() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("dsmenubar-wildcard-host-\(UUID().uuidString)")
@@ -677,22 +677,35 @@ final class ProcessManagerTests: XCTestCase {
         let modelURL = directory.appendingPathComponent("model.gguf")
         try makeGGUF(architecture: "glm5-next").write(to: modelURL)
 
-        var configuration = ServerConfiguration.Config()
-        configuration.serverPath = serverURL.path
-        configuration.modelPath = modelURL.path
-        configuration.logPath = directory.appendingPathComponent("server.log").path
-        configuration.host = "0.0.0.0"
-        configuration.port = 8123
+        let expected = [
+            ("0.0.0.0", "http://127.0.0.1:8123/v1/models"),
+            ("::", "http://[::1]:8123/v1/models"),
+            ("[::]", "http://[::1]:8123/v1/models"),
+            ("[0:0:0:0:0:0:0:0]", "http://[::1]:8123/v1/models")
+        ]
 
-        let manager = ProcessManager()
-        defer {
-            if manager.isProcessRunning {
-                manager.terminate()
+        for (host, url) in expected {
+            var configuration = ServerConfiguration.Config()
+            configuration.serverPath = serverURL.path
+            configuration.modelPath = modelURL.path
+            configuration.logPath = directory
+                .appendingPathComponent("server-\(UUID().uuidString).log").path
+            configuration.host = host
+            configuration.port = 8123
+
+            let manager = ProcessManager()
+            defer {
+                if manager.isProcessRunning {
+                    manager.terminate()
+                }
             }
-        }
 
-        let healthURL = manager.launch(configuration: configuration)
-        XCTAssertEqual(healthURL?.absoluteString, "http://127.0.0.1:8123/v1/models")
+            let healthURL = manager.launch(configuration: configuration)
+            XCTAssertEqual(healthURL?.absoluteString, url, host)
+            // A URL alone would also be returned by a launch that never ran;
+            // this is the whole path, child process included.
+            XCTAssertTrue(manager.isProcessRunning, host)
+        }
     }
 
     private func makeGGUF(architecture: String, version: UInt32 = 3) -> Data {

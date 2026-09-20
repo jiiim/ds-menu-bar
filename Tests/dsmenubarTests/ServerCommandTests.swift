@@ -985,14 +985,90 @@ final class ServerCommandTests: XCTestCase {
         XCTAssertFalse(ServerConfiguration.Config.isValidMemoryBudget("GB"))
     }
 
-    func testHealthProbeHostMapsWildcardBindAddressesToLoopback() {
+    func testHealthProbeURLHostMapsWildcardBindAddressesToLoopback() {
         // Wildcards are not connectable through URLSession; probe loopback.
-        XCTAssertEqual(DS4ServerCommand.healthProbeHost(for: "0.0.0.0"), "127.0.0.1")
-        XCTAssertEqual(DS4ServerCommand.healthProbeHost(for: "::"), "[::1]")
+        XCTAssertEqual(DS4ServerCommand.healthProbeURLHost(for: "0.0.0.0"), "127.0.0.1")
+        // One address, many spellings. The mapping parses rather than matches,
+        // so every way of writing the IPv6 wildcard lands on loopback — not
+        // just the two ds4-server happens to document.
+        for wildcard in ["::", "[::]", "::0", "[::0]", "0:0:0:0:0:0:0:0", "[0000::0]"] {
+            XCTAssertEqual(DS4ServerCommand.healthProbeURLHost(for: wildcard), "[::1]", wildcard)
+        }
+        // The same wildcard wearing an IPv4-mapped prefix resolves to the IPv4
+        // loopback, which is what such a listener actually accepts.
+        XCTAssertEqual(
+            DS4ServerCommand.healthProbeURLHost(for: "[::ffff:0.0.0.0]"), "127.0.0.1")
+        XCTAssertEqual(DS4ServerCommand.healthProbeURLHost(for: "::ffff:0:0"), "127.0.0.1")
         // Everything else is a real destination and must pass through: a
         // specific LAN address or hostname is how the user scoped the server.
-        XCTAssertEqual(DS4ServerCommand.healthProbeHost(for: "127.0.0.1"), "127.0.0.1")
-        XCTAssertEqual(DS4ServerCommand.healthProbeHost(for: "localhost"), "localhost")
-        XCTAssertEqual(DS4ServerCommand.healthProbeHost(for: "192.168.1.10"), "192.168.1.10")
+        XCTAssertEqual(DS4ServerCommand.healthProbeURLHost(for: "127.0.0.1"), "127.0.0.1")
+        XCTAssertEqual(DS4ServerCommand.healthProbeURLHost(for: "localhost"), "localhost")
+        XCTAssertEqual(DS4ServerCommand.healthProbeURLHost(for: "192.168.1.10"), "192.168.1.10")
+        // A specific IPv6 address comes back bracketed whichever way it went
+        // in: the result is a URL host component, and URLComponents rejects
+        // the bare form.
+        XCTAssertEqual(DS4ServerCommand.healthProbeURLHost(for: "::1"), "[::1]")
+        XCTAssertEqual(DS4ServerCommand.healthProbeURLHost(for: "[::1]"), "[::1]")
+        XCTAssertEqual(DS4ServerCommand.healthProbeURLHost(for: "[fe80::1]"), "[fe80::1]")
+        // inet_pton parses a scope ID, so a link-local address stays on the
+        // address path and comes back bracketed; URLComponents then encodes
+        // the zone per RFC 6874 (%en0 → %25en0) and builds a usable URL.
+        XCTAssertEqual(
+            DS4ServerCommand.healthProbeURLHost(for: "[fe80::1%en0]"), "[fe80::1%en0]")
+        XCTAssertEqual(
+            DS4ServerCommand.healthProbeURLHost(for: "fe80::1%en0"), "[fe80::1%en0]")
+        // A name is returned in the same single spelling, brackets removed —
+        // CFNetwork resolves "[localhost]", but the probe and --host must not
+        // disagree about what the host is called.
+        XCTAssertEqual(DS4ServerCommand.healthProbeURLHost(for: "[localhost]"), "localhost")
+    }
+
+    /// Brackets are URL syntax, not part of an address, and getaddrinfo
+    /// rejects them. Stripping them once keeps the bind, the pre-relaunch port
+    /// wait, and --host all looking at the same host.
+    func testNormalizedHostStripsURLBrackets() {
+        XCTAssertEqual(DS4ServerCommand.normalizedHost("[::]"), "::")
+        XCTAssertEqual(DS4ServerCommand.normalizedHost("[::1]"), "::1")
+        // Brackets are stripped by shape, not by what they wrap: nothing here
+        // validates that the contents are an IPv6 address.
+        XCTAssertEqual(DS4ServerCommand.normalizedHost("[localhost]"), "localhost")
+        XCTAssertEqual(DS4ServerCommand.normalizedHost("0.0.0.0"), "0.0.0.0")
+        XCTAssertEqual(DS4ServerCommand.normalizedHost("localhost"), "localhost")
+        // Nothing to unwrap: leave malformed input exactly as typed so launch
+        // reports the host the user actually entered.
+        XCTAssertEqual(DS4ServerCommand.normalizedHost("[]"), "[]")
+        XCTAssertEqual(DS4ServerCommand.normalizedHost("["), "[")
+        XCTAssertEqual(DS4ServerCommand.normalizedHost("[::"), "[::")
+    }
+
+    /// The probe remap must never reach the server: --host is what exposes
+    /// ds4-server beyond loopback, so a loopback value there would silently
+    /// undo the access the user configured. The configured host passes through
+    /// untouched apart from URL brackets, which a bind cannot take.
+    func testConfiguredHostReachesTheServerWithOnlyBracketsStripped() {
+        let expected = [
+            ("0.0.0.0", "0.0.0.0"),
+            ("::", "::"),
+            ("[::]", "::"),
+            ("[::1]", "::1"),
+            ("192.168.1.10", "192.168.1.10"),
+            ("localhost", "localhost")
+        ]
+
+        for (configured, sent) in expected {
+            var config = ServerConfiguration.Config()
+            config.host = configured
+            let args = DS4ServerCommand.arguments(
+                configuration: config,
+                resolvedModelPath: "/tmp/model.gguf",
+                resolvedMTPPath: "/tmp/mtp.gguf"
+            )
+
+            guard let flag = args.firstIndex(of: "--host") else {
+                XCTFail("--host missing for \(configured)")
+                continue
+            }
+            XCTAssertEqual(args[args.index(after: flag)], sent, configured)
+        }
     }
 }

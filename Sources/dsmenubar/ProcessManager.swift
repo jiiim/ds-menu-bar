@@ -184,7 +184,7 @@ final class ProcessManager {
 
         var components = URLComponents()
         components.scheme = "http"
-        components.host = DS4ServerCommand.healthProbeHost(for: configuration.host)
+        components.host = DS4ServerCommand.healthProbeURLHost(for: configuration.host)
         components.port = configuration.port
         components.path = "/v1/models"
         guard let healthURL = components.url else {
@@ -499,7 +499,12 @@ final class ProcessManager {
         hints.ai_family = AF_UNSPEC
         hints.ai_socktype = SOCK_STREAM
         var resolved: UnsafeMutablePointer<addrinfo>?
-        guard getaddrinfo(host, String(p), &hints, &resolved) == 0, resolved != nil else {
+        // The configured host can arrive in URL form. getaddrinfo rejects the
+        // brackets with EAI_NONAME, and an unresolvable host reads as "port
+        // free" just below — silently skipping the very wait this drives — so
+        // normalize here rather than trusting every caller to remember.
+        let bare = DS4ServerCommand.normalizedHost(host)
+        guard getaddrinfo(bare, String(p), &hints, &resolved) == 0, resolved != nil else {
             return true  // unresolvable: launch reports it far more clearly than a stalled wait
         }
         defer { freeaddrinfo(resolved) }
