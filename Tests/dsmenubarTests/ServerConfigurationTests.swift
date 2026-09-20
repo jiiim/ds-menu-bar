@@ -291,6 +291,36 @@ final class ServerConfigurationTests: XCTestCase {
         )
     }
 
+    /// Whitespace in the host is always a typo: ds4-server cannot bind it and
+    /// URLComponents will not build a health-check URL from it. Validation
+    /// names the field the user mistyped instead of letting a launch fail and
+    /// reporting it as a URL problem.
+    func testHostWithWhitespaceIsRejectedByName() {
+        var config = ServerConfiguration.Config()
+
+        for host in [" 0.0.0.0", "0.0.0.0 ", "0.0.0.0\t", " [::] ", "my host"] {
+            config.host = host
+            XCTAssertEqual(
+                config.validationErrors(modelProfile: .unknown)[.host],
+                "Host cannot contain whitespace",
+                host
+            )
+        }
+
+        // An all-whitespace host is empty, and must still say so rather than
+        // complaining about the spaces it is entirely made of.
+        config.host = "   "
+        XCTAssertEqual(
+            config.validationErrors(modelProfile: .unknown)[.host],
+            "Host cannot be empty"
+        )
+
+        for host in ["0.0.0.0", "::", "[::]", "localhost", "192.168.1.10"] {
+            config.host = host
+            XCTAssertNil(config.validationErrors(modelProfile: .unknown)[.host], host)
+        }
+    }
+
     func testUnknownModelDoesNotValidateOrEmitModelSpecificTuning() {
         var config = ServerConfiguration.Config()
         config.serverPath = "/opt/ds4/ds4-server"

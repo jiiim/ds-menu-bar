@@ -635,6 +635,15 @@ extension ServerConfiguration.Config {
             errors[.modelPath] = "This is a \(modelProfile.displayName), not a main model. Choose a main model GGUF instead."
         }
         nonEmpty(host, field: .host, message: "Host cannot be empty")
+        // No hostname or address literal contains whitespace, so a space is
+        // always a typo — and an expensive one. ds4-server's bind fails on it,
+        // and the app builds its health-check URL from the same string, which
+        // URLComponents rejects. Naming the field beats spending a launch to
+        // report a URL error about a value the user can see is wrong.
+        if errors[.host] == nil,
+           host.rangeOfCharacter(from: .whitespacesAndNewlines) != nil {
+            errors[.host] = "Host cannot contain whitespace"
+        }
         nonEmpty(logPath, field: .logPath, message: "Choose a server log file")
         bounded(logMaxSizeMB, field: .logMaxSizeMB, label: "Maximum size per log")
 
