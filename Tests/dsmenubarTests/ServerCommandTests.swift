@@ -984,4 +984,15 @@ final class ServerCommandTests: XCTestCase {
         XCTAssertFalse(ServerConfiguration.Config.isValidMemoryBudget("40MB"))
         XCTAssertFalse(ServerConfiguration.Config.isValidMemoryBudget("GB"))
     }
+
+    func testHealthProbeHostMapsWildcardBindAddressesToLoopback() {
+        // Wildcards are not connectable through URLSession; probe loopback.
+        XCTAssertEqual(DS4ServerCommand.healthProbeHost(for: "0.0.0.0"), "127.0.0.1")
+        XCTAssertEqual(DS4ServerCommand.healthProbeHost(for: "::"), "[::1]")
+        // Everything else is a real destination and must pass through: a
+        // specific LAN address or hostname is how the user scoped the server.
+        XCTAssertEqual(DS4ServerCommand.healthProbeHost(for: "127.0.0.1"), "127.0.0.1")
+        XCTAssertEqual(DS4ServerCommand.healthProbeHost(for: "localhost"), "localhost")
+        XCTAssertEqual(DS4ServerCommand.healthProbeHost(for: "192.168.1.10"), "192.168.1.10")
+    }
 }

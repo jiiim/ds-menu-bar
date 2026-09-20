@@ -184,7 +184,7 @@ final class ProcessManager {
 
         var components = URLComponents()
         components.scheme = "http"
-        components.host = configuration.host
+        components.host = DS4ServerCommand.healthProbeHost(for: configuration.host)
         components.port = configuration.port
         components.path = "/v1/models"
         guard let healthURL = components.url else {
