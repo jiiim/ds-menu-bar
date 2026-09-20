@@ -355,6 +355,24 @@ enum DS4ServerCommand {
         return String(Int(value))
     }
 
+    /// The host the app should probe for readiness when the server is
+    /// configured with a wildcard bind address.
+    ///
+    /// `--host 0.0.0.0` (or `::`) tells ds4-server to listen on every
+    /// interface, but it is not a connectable destination: CFNetwork rejects
+    /// a request URL whose host is the unspecified address outright with
+    /// `NSURLErrorBadURL`, so a health probe built from the configured host
+    /// would fail forever and the menu would stay on "Starting…" even though
+    /// the server is healthy and serving. A wildcard listener accepts loopback
+    /// too, so probe the matching loopback address instead.
+    static func healthProbeHost(for configuredHost: String) -> String {
+        switch configuredHost {
+        case "0.0.0.0": return "127.0.0.1"
+        case "::": return "[::1]"
+        default: return configuredHost
+        }
+    }
+
     private static func shellQuote(_ value: String) -> String {
         guard !value.isEmpty else { return "''" }
         if value.rangeOfCharacter(from: CharacterSet(charactersIn: " \t\n'\"\\$`|;&<>*?!()[]{}")) == nil {

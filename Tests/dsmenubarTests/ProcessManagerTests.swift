@@ -658,6 +658,43 @@ final class ProcessManagerTests: XCTestCase {
         )
     }
 
+    /// `--host 0.0.0.0` is a bind wildcard, not a connectable destination:
+    /// CFNetwork rejects a request URL for the unspecified address outright
+    /// (`NSURLErrorBadURL`), so a probe built from the configured host would
+    /// never succeed and the menu would stay on "Starting…" against a healthy
+    /// server. The probe must target loopback instead.
+    func testLaunchWithWildcardHostReturnsLoopbackHealthURL() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dsmenubar-wildcard-host-\(UUID().uuidString)")
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: directory) }
+
+        let serverURL = directory.appendingPathComponent("ds4-server")
+        try Data("#!/bin/sh\nsleep 5\n".utf8).write(to: serverURL)
+        try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: serverURL.path)
+
+        let modelURL = directory.appendingPathComponent("model.gguf")
+        try makeGGUF(architecture: "glm5-next").write(to: modelURL)
+
+        var configuration = ServerConfiguration.Config()
+        configuration.serverPath = serverURL.path
+        configuration.modelPath = modelURL.path
+        configuration.logPath = directory.appendingPathComponent("server.log").path
+        configuration.host = "0.0.0.0"
+        configuration.port = 8123
+
+        let manager = ProcessManager()
+        defer {
+            if manager.isProcessRunning {
+                manager.terminate()
+            }
+        }
+
+        let healthURL = manager.launch(configuration: configuration)
+        XCTAssertEqual(healthURL?.absoluteString, "http://127.0.0.1:8123/v1/models")
+    }
+
     private func makeGGUF(architecture: String, version: UInt32 = 3) -> Data {
         var data = Data([0x47, 0x47, 0x55, 0x46])
         append(version, to: &data)
