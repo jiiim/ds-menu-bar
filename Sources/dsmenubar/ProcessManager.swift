@@ -90,8 +90,33 @@ final class ProcessManager {
     /// "killed by signal".
     private var failureReason: String?
 
+    /// When the current run last served a request, from the progress records
+    /// the log parser recognizes. Cleared when a run starts and kept after it
+    /// stops, so the menu can show "unused" on a fresh server.
+    private(set) var lastUsageAt: Date?
+
+    /// How often a log write is parsed and hopped to main while the speed
+    /// display is off. The timestamp is minute-granularity in the menu, so
+    /// coalescing costs nothing visible.
+    private static let idleUsageReadInterval: TimeInterval = 1
+
     /// Timer used to poll for port availability after a restart's stop phase.
     private var restartTimer: DispatchSourceTimer?
+
+    /// One forced kill per termination: SIGTERM first, then SIGKILL if the child
+    /// has not exited after `forceKillGrace`. A stopped or wedged server cannot
+    /// act on SIGTERM, and without this bound it would hold its port and the
+    /// menu forever. Injectable so tests do not wait real time.
+    private var forceKillTimer: DispatchSourceTimer?
+    let forceKillGrace: TimeInterval
+    let portWaitTimeout: TimeInterval
+
+    // MARK: - Init
+
+    init(forceKillGrace: TimeInterval = 30, portWaitTimeout: TimeInterval = 10) {
+        self.forceKillGrace = forceKillGrace
+        self.portWaitTimeout = portWaitTimeout
+    }
 
     // MARK: - Launch
 
@@ -109,8 +134,10 @@ final class ProcessManager {
         intentionalStop = false
         pendingRestart = false
         failureReason = nil
-        // A fresh start supersedes any pending restart-wait.
+        // A fresh start supersedes any pending restart-wait and any forced kill
+        // armed against the process it replaces.
         restartTimer?.cancel(); restartTimer = nil
+        forceKillTimer?.cancel(); forceKillTimer = nil
 
         let resolvedServerPath = DS4ServerCommand.expandingTilde(configuration.serverPath)
         let serverDir = DS4ServerCommand.serverDirectory(for: configuration.serverPath)
@@ -348,6 +375,7 @@ final class ProcessManager {
                 self.process = nil
 
                 self.restartTimer?.cancel(); self.restartTimer = nil
+                self.forceKillTimer?.cancel(); self.forceKillTimer = nil
 
                 // Notify the orchestrator; it decides the next status.
                 self.onTerminated?(TerminationInfo(
@@ -389,7 +417,30 @@ final class ProcessManager {
     /// Send SIGTERM to the child process. Also the cancel path for an in-progress
     /// start or restart — the caller should have cancelled any health/startup
     /// timers before invoking this.
+    ///
+    /// An explicit stop clears any recorded failure first. A Stop during the
+    /// grace after a health failure must be reported as Stopped, not as the
+    /// failure it interrupted, and must never feed an automatic restart.
     func terminate() {
+        failureReason = nil
+        terminateProcess()
+    }
+
+    /// Convenience: record why we are terminating, then terminate. Used by
+    /// HealthChecker when a running server becomes unreachable.
+    func terminate(withFailureReason reason: String) {
+        failureReason = reason
+        terminateProcess()
+    }
+
+    /// The shared stop path. `terminate(withFailureReason:)` calls this
+    /// directly, never through `terminate()`, so its reason survives to the
+    /// termination handler and the reaper still classifies it as a failure.
+    ///
+    /// SIGTERM first, then SIGKILL after `forceKillGrace` if the child has not
+    /// exited: SIGTERM to a stopped process stays pending, and the termination
+    /// handler only fires on a real exit.
+    private func terminateProcess() {
         dispatchPrecondition(condition: .onQueue(.main))
         restartTimer?.cancel(); restartTimer = nil
 
@@ -402,15 +453,29 @@ final class ProcessManager {
         intentionalStop = true
         cancelLogRotation(for: proc)
         proc.terminate()  // SIGTERM
-        // No forced kill on a timer: we let the server shut down and watch for it
-        // via the termination handler, which finalizes state.
+        scheduleForcedKill(for: proc)
     }
 
-    /// Convenience: set `failureReason` then terminate. Used by HealthChecker
-    /// when a running server becomes unreachable.
-    func terminate(withFailureReason reason: String) {
-        failureReason = reason
-        terminate()
+    /// Arm the single forced kill for this run. Repeated terminations do not
+    /// postpone it, and it fires only while the same run still owns the
+    /// process, so a stale timer can never hit a replacement.
+    private func scheduleForcedKill(for proc: Process) {
+        guard forceKillTimer == nil, let runID = currentRunID else { return }
+        let pid = proc.processIdentifier
+        let grace = forceKillGrace
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + grace)
+        timer.setEventHandler { [weak self] in
+            guard let self = self else { return }
+            guard self.currentRunID == runID, self.process === proc, proc.isRunning else {
+                return
+            }
+            self.forceKillTimer?.cancel(); self.forceKillTimer = nil
+            self.writeLog("SIGTERM not answered after \(Int(grace))s; sending SIGKILL\n")
+            kill(pid, SIGKILL)
+        }
+        forceKillTimer = timer
+        timer.resume()
     }
 
     // MARK: - Restart
@@ -429,6 +494,7 @@ final class ProcessManager {
         intentionalStop = true
         cancelLogRotation(for: proc)
         proc.terminate()  // SIGTERM; the termination handler picks up the relaunch
+        scheduleForcedKill(for: proc)
         // The actual relaunch happens in startWhenPortAvailable, triggered by
         // the termination callback when pendingRestart is true.
     }
@@ -454,7 +520,7 @@ final class ProcessManager {
         // else holding the port would otherwise pin the app in .restarting with
         // no recovery but a manual Stop. Past the deadline, relaunch anyway and
         // let ds4-server's own bind failure land in the log where it belongs.
-        let deadline = Date().addingTimeInterval(Self.portWaitTimeout)
+        let deadline = Date().addingTimeInterval(portWaitTimeout)
         let timer = DispatchSource.makeTimerSource(queue: .main)
         timer.schedule(deadline: .now() + 0.2, repeating: 0.2)
         timer.setEventHandler { [weak self] in
@@ -464,7 +530,7 @@ final class ProcessManager {
             if !free {
                 os_log(.error, log: self.log,
                        "port %d still held after %.0fs; relaunching anyway",
-                       port, Self.portWaitTimeout)
+                       port, self.portWaitTimeout)
             }
             self.restartTimer?.cancel(); self.restartTimer = nil
             self.onPortAvailable?()
@@ -472,9 +538,6 @@ final class ProcessManager {
         restartTimer = timer
         timer.resume()
     }
-
-    /// How long the post-restart port wait may run before relaunching regardless.
-    private static let portWaitTimeout: TimeInterval = 10
 
     /// Whether the configured host:port can be bound right now — i.e. the old
     /// server has fully released it. Deliberately mirrors the server's own bind
@@ -536,14 +599,17 @@ final class ProcessManager {
     ) {
         dispatchPrecondition(condition: .onQueue(.main))
         stopLogMonitoring()
+        // A new run starts unused, whatever the previous run's last record was;
+        // the stop-time drain above has already accounted for those.
+        lastUsageAt = nil
         let monitorID = UUID()
         logMonitorID = monitorID
         activeLogPath = path
 
-        if performanceMonitoringEnabled {
-            performanceQueue.async { [performanceReader] in
-                performanceReader.start(path: path)
-            }
+        // The reader runs for the life of the server: request activity must not
+        // depend on the menu-bar speed display being enabled.
+        performanceQueue.async { [performanceReader] in
+            performanceReader.start(path: path)
         }
 
         let monitorFileDescriptor = dup(fileDescriptor)
@@ -580,9 +646,19 @@ final class ProcessManager {
         logWriteSource?.cancel()
         logWriteSource = nil
         logSizeCheckScheduled = false
-        logMonitorID = UUID()
         logRotationMonitorID = nil
         activeLogPath = nil
+
+        // Consume whatever the reader has not seen yet, so a request record
+        // written just before the stop still counts. The read is bounded to
+        // bytes appended since the last read; the queue is serial, so this also
+        // waits out any in-flight read before the monitor ID is invalidated.
+        let drained = performanceQueue.sync { performanceReader.readAvailable() }
+        if !drained.isEmpty {
+            applyPerformanceBatch(drained, monitorID: logMonitorID)
+        }
+
+        logMonitorID = UUID()
         performanceQueue.async { [performanceReader] in
             performanceReader.stop()
         }
@@ -593,23 +669,18 @@ final class ProcessManager {
         }
     }
 
-    /// Enable or disable incremental performance parsing without changing the
-    /// server process. Enabling during a request starts at EOF and receives the
-    /// next complete progress record rather than presenting stale log history.
+    /// Enable or disable forwarding parsed request records to the display. The
+    /// reader itself runs for the life of the server: request activity must not
+    /// depend on a display preference.
     func setPerformanceMonitoring(_ enabled: Bool) {
         guard enabled != performanceMonitoringEnabled else { return }
         performanceMonitoringEnabled = enabled
-
         guard enabled else {
-            performanceQueue.async { [performanceReader] in
-                performanceReader.stop()
-            }
             onPerformanceChange?(.idle)
             return
         }
-
-        // With no server running there is nothing to read yet; the flag above
-        // is enough, because startLogMonitoring opens the reader at launch.
+        // Skip whatever accumulated while the display was off, so the next
+        // record shown is current rather than a replay of idle history.
         guard let path = activeLogPath else { return }
         performanceQueue.async { [performanceReader] in
             performanceReader.start(path: path)
@@ -617,27 +688,41 @@ final class ProcessManager {
     }
 
     private func readPerformanceUpdates(monitorID: UUID) {
-        guard performanceMonitoringEnabled else { return }
+        // With the display off, activity only needs a coarse timestamp, so the
+        // read and its main hop are coalesced to this interval. The stop-time
+        // drain still captures the final records exactly.
+        if !performanceMonitoringEnabled, let lastUsageAt,
+           Date().timeIntervalSince(lastUsageAt) < Self.idleUsageReadInterval {
+            return
+        }
         performanceQueue.async { [weak self, performanceReader] in
-            let updates = performanceReader.readAvailable()
-            guard !updates.isEmpty else { return }
+            let batch = performanceReader.readAvailable()
+            guard !batch.isEmpty else { return }
             // Resolved here so the main hop captures an immutable binding
             // rather than this closure's mutable capture.
             let manager = self
             DispatchQueue.main.async {
-                guard let self = manager,
-                      self.performanceMonitoringEnabled,
-                      self.logMonitorID == monitorID
-                else { return }
-                for update in updates {
-                    self.onPerformanceChange?(update)
-                }
+                manager?.applyPerformanceBatch(batch, monitorID: monitorID)
             }
         }
     }
 
-    private func rewindPerformanceReader() {
+    /// Apply one batch of parsed records. Kept separate from the queue hop so a
+    /// stale batch can be exercised directly: the monitor ID guard drops
+    /// anything queued by a run that has since been replaced.
+    func applyPerformanceBatch(_ batch: ServerLogBatch, monitorID: UUID) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard logMonitorID == monitorID else { return }
+        if batch.sawRequestActivity {
+            lastUsageAt = Date()
+        }
         guard performanceMonitoringEnabled else { return }
+        for update in batch.updates {
+            onPerformanceChange?(update)
+        }
+    }
+
+    private func rewindPerformanceReader() {
         performanceQueue.async { [performanceReader] in
             performanceReader.rewind()
         }
@@ -980,6 +1065,7 @@ final class ProcessManager {
         logFileHandle?.closeFile()
         logFileHandle = nil
         restartTimer?.cancel(); restartTimer = nil
+        forceKillTimer?.cancel(); forceKillTimer = nil
     }
 
     // MARK: - Process state queries

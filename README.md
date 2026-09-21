@@ -18,7 +18,7 @@ running. It does not manage remote, distributed, Linux, CUDA, or ROCm servers.
 It does not download, build, bundle, or update `ds4-server` or model files.
 
 <p align="center">
-  <img src="docs/images/menu-bar-menu.png" width="325" alt="DS Menu Bar menu showing generation speed, server status, and the Keep Awake While Server Runs control">
+  <img src="docs/images/menu-bar-menu.png" width="350" alt="DS Menu Bar menu showing generation speed, server status, last activity, and the Keep Awake While Server Runs control">
 </p>
 
 ## Built for user-managed setups
@@ -73,7 +73,7 @@ instructions and model-format information. DS Menu Bar does not include
 ### ds4-server version compatibility
 
 > [!IMPORTANT]
-> At the time of the DS Menu Bar v0.0.8 release, `ds4` does not publish
+> At the time of the DS Menu Bar v0.0.9 release, `ds4` does not publish
 > versioned releases. Compatibility is therefore tracked against specific
 > commits on its `main` branch, and DS Menu Bar is updated as upstream changes
 > are reviewed. The latest known compatible commit is
@@ -164,7 +164,9 @@ constructing the server command.
 
 After setup, use the star icon in the menu bar to start or stop the server,
 open its log, or open Settings. Applying settings while the server is running
-restarts it with the updated configuration.
+restarts it with the updated configuration. The menu also shows the server's
+status and when it last served a request — `unused` until it has served one,
+a relative time after that, and a dash while it is not running.
 
 ## Settings
 
@@ -173,8 +175,9 @@ to the selected model and the Mac's unified memory.
 
 - **General**: launch at login, the optional menu-bar throughput display,
   keeping the Mac awake while the server runs, confirming before a quit that
-  would stop an active server, a preview of the command that runs on Apply, and
-  a restore of model tuning defaults.
+  would stop an active server, restarting the server automatically after a
+  crash or if it stops responding, a preview of the command that runs on
+  Apply, and a restore of model tuning defaults.
 - **Model**: the `ds4-server` executable and main GGUF model, detected model
   details, and vision encoder settings for models that support them.
 - **Server**: the HTTP host and port, browser client access, the default
@@ -204,6 +207,16 @@ restarting, because quitting stops it and interrupts connected clients. The
 prompt appears for quits made in the app and from the Dock; scripted quits and
 a logout or restart proceed without a dialog. Turn it off in **General** if
 you would rather quit immediately.
+
+If `ds4-server` crashes, is terminated from outside, or stops answering on its
+health endpoint, DS Menu Bar reports it and, by default, restarts it once
+automatically, notifying when it is back. A server that has
+stopped answering is forced closed after thirty seconds so its port frees. If
+it fails again before a replacement has been healthy for five minutes, the app
+leaves it stopped and reports that the automatic restart is not repeating.
+Starting the server by hand clears that, as does a later failure after a
+longer healthy run. The same **General** toggle turns this off, and the report
+says so when it is off.
 
 The Model tab for a detected Qwen3.8 Flash Next model:
 

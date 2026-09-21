@@ -18,6 +18,7 @@ final class ServerConfiguration {
     private(set) var showsPerformanceInMenuBar: Bool
     private(set) var keepsAwakeWhileRunning: Bool
     private(set) var confirmQuitWhileServerActive: Bool
+    private(set) var autoRestartServer: Bool
     private let log = OSLog(subsystem: "com.jiiim.ds-menu-bar", category: "config")
 
     init(defaults: UserDefaults = .standard) {
@@ -32,6 +33,11 @@ final class ServerConfiguration {
             confirmQuitWhileServerActive = true
         } else {
             confirmQuitWhileServerActive = defaults.bool(forKey: Self.confirmQuitKey)
+        }
+        if defaults.object(forKey: Self.autoRestartKey) == nil {
+            autoRestartServer = true
+        } else {
+            autoRestartServer = defaults.bool(forKey: Self.autoRestartKey)
         }
         loadConfig()
     }
@@ -158,6 +164,7 @@ final class ServerConfiguration {
     private static let performanceDisplayKey = "dsmenubar.showPerformanceInMenuBar"
     private static let keepAwakeKey = "dsmenubar.keepAwakeWhileServerRuns"
     private static let confirmQuitKey = "dsmenubar.confirmQuitWhileServerActive"
+    private static let autoRestartKey = "dsmenubar.autoRestartServer"
 
     var needsInitialSetup: Bool {
         guard defaults.object(forKey: Self.configKey) != nil else { return true }
@@ -248,6 +255,13 @@ final class ServerConfiguration {
     func setConfirmQuitWhileServerActive(_ requested: Bool) {
         confirmQuitWhileServerActive = requested
         defaults.set(requested, forKey: Self.confirmQuitKey)
+    }
+
+    /// Persist the auto-restart preference immediately, on the same terms: it
+    /// is an app behavior, not part of ds4-server's command line.
+    func setAutoRestartServer(_ requested: Bool) {
+        autoRestartServer = requested
+        defaults.set(requested, forKey: Self.autoRestartKey)
     }
 
     /// Persist the current configuration and apply launch-at-login. Login-item

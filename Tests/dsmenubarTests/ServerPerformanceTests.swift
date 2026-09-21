@@ -16,6 +16,10 @@ final class ServerPerformanceTests: XCTestCase {
             parser.ingest(Data("0915 23:05:02 ds4-server: chat ctx=0..882:882 prompt start\n".utf8)),
             []
         )
+        XCTAssertTrue(
+            parser.sawRequestActivity,
+            "a prompt start is request activity even though it carries no rate"
+        )
 
         let prefill = "0915 23:05:04 ds4-server: chat ctx=0..882:882 prefill chunk "
             + "882/882 (100.0%) chunk=0.00 t/s avg=388.30 t/s 2.271s\n"
@@ -38,12 +42,14 @@ final class ServerPerformanceTests: XCTestCase {
             )),
             [.idle]
         )
+        XCTAssertFalse(parser.sawRequestActivity, "a finish is not activity")
         XCTAssertEqual(
             parser.ingest(Data(
                 "0915 23:05:13 ds4-server: shutdown requested, draining requests\n".utf8
             )),
             [.idle]
         )
+        XCTAssertFalse(parser.sawRequestActivity, "a shutdown is not activity")
     }
 
     func testIgnoresUnrelatedAndMisleadingLines() {
@@ -237,14 +243,14 @@ final class ServerPerformanceTests: XCTestCase {
         // it, then start the hold.
         XCTAssertEqual(
             policy.receive(.idle, now: start.addingTimeInterval(0.2)),
-            [.cancelPublish, .display(final), .scheduleIdle(after: 1.5)]
+            [.cancelPublish, .display(final), .scheduleIdle(after: 6.0)]
         )
         // A second finish record does not restart the hold.
         XCTAssertEqual(policy.receive(.idle, now: start.addingTimeInterval(0.3)), [])
         XCTAssertEqual(policy.displayed, final)
 
         XCTAssertEqual(
-            policy.idleTimerFired(now: start.addingTimeInterval(1.7)),
+            policy.idleTimerFired(now: start.addingTimeInterval(6.2)),
             [.display(.idle)]
         )
         XCTAssertEqual(policy.displayed, .idle)
@@ -259,7 +265,7 @@ final class ServerPerformanceTests: XCTestCase {
         XCTAssertEqual(policy.receive(generation, now: start), [.display(generation)])
         XCTAssertEqual(
             policy.receive(.idle, now: start.addingTimeInterval(0.1)),
-            [.scheduleIdle(after: 1.5)]
+            [.scheduleIdle(after: 6.0)]
         )
         XCTAssertEqual(
             policy.receive(prefill, now: start.addingTimeInterval(0.2)),
@@ -307,7 +313,7 @@ final class ServerPerformanceTests: XCTestCase {
             [
                 .cancelPublish,
                 .display(ServerPerformance(phase: .generation, tokensPerSecond: 31)),
-                .scheduleIdle(after: 1.5),
+                .scheduleIdle(after: 6.0),
             ]
         )
 
@@ -337,19 +343,20 @@ final class ServerPerformanceTests: XCTestCase {
         try writer.write(contentsOf: Data(
             "ds4-server: chat ctx=0..10:10 prompt start\n".utf8
         ))
-        XCTAssertEqual(
-            reader.readAvailable(),
-            []
-        )
+        let started = reader.readAvailable()
+        XCTAssertTrue(started.updates.isEmpty)
+        XCTAssertTrue(started.sawRequestActivity, "a prompt start is activity without a rate")
 
         try writer.truncate(atOffset: 0)
         reader.rewind()
         try writer.write(contentsOf: Data(
             "ds4-server: chat ctx=10..60:50 gen=50 decoding chunk=30.0 t/s avg=29.5 t/s 1.0s\n".utf8
         ))
+        let decoded = reader.readAvailable()
         XCTAssertEqual(
-            reader.readAvailable(),
+            decoded.updates,
             [ServerPerformance(phase: .generation, tokensPerSecond: 29.5)]
         )
+        XCTAssertTrue(decoded.sawRequestActivity)
     }
 }

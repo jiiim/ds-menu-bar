@@ -84,7 +84,7 @@ struct ServerPerformance: Equatable {
 /// all.
 struct PerformanceDisplayPolicy {
     static let publishInterval: TimeInterval = 0.5
-    static let holdInterval: TimeInterval = 1.5
+    static let holdInterval: TimeInterval = 6.0
 
     enum Effect: Equatable {
         case display(ServerPerformance)
@@ -200,8 +200,14 @@ struct PerformanceDisplayPolicy {
 struct ServerPerformanceLogParser {
     private var buffered = Data()
 
+    /// True when the last `ingest` saw request work. Rates are only part of it:
+    /// a prompt start carries no rate but still means the server was asked to
+    /// do something.
+    private(set) var sawRequestActivity = false
+
     mutating func ingest(_ data: Data) -> [ServerPerformance] {
         buffered.append(data)
+        sawRequestActivity = false
         var updates: [ServerPerformance] = []
 
         while let newline = buffered.firstIndex(of: 0x0a) {
@@ -210,6 +216,11 @@ struct ServerPerformanceLogParser {
             let line = String(decoding: lineData, as: UTF8.self)
             if let update = Self.parse(line) {
                 updates.append(update)
+                if update != .idle {
+                    sawRequestActivity = true
+                }
+            } else if Self.describesRequestActivity(line) {
+                sawRequestActivity = true
             }
         }
         return updates
@@ -217,6 +228,13 @@ struct ServerPerformanceLogParser {
 
     mutating func reset() {
         buffered.removeAll(keepingCapacity: true)
+        sawRequestActivity = false
+    }
+
+    /// A request-start record: `ds4-server: <endpoint> ctx=... [flags] prompt
+    /// start`. It carries no rate but is the earliest sign of a request.
+    private static func describesRequestActivity(_ line: String) -> Bool {
+        line.contains("ds4-server:") && line.contains(" prompt start")
     }
 
     private static func parse(_ line: String) -> ServerPerformance? {
@@ -247,6 +265,16 @@ struct ServerPerformanceLogParser {
     }
 }
 
+/// One read of appended log bytes: the rate records parsed, and whether the
+/// bytes described request work at all. A request that only logged its start
+/// is activity even though it yields no displayable rate.
+struct ServerLogBatch: Equatable {
+    var updates: [ServerPerformance] = []
+    var sawRequestActivity = false
+
+    var isEmpty: Bool { updates.isEmpty && !sawRequestActivity }
+}
+
 /// Reads only bytes appended after monitoring starts. Rotation and log clearing
 /// truncate the active inode, so a smaller file resets both the offset and any
 /// partial line left by the prior contents.
@@ -269,21 +297,25 @@ final class ServerPerformanceLogReader: @unchecked Sendable {
         offset = end
     }
 
-    func readAvailable() -> [ServerPerformance] {
-        guard let handle else { return [] }
+    func readAvailable() -> ServerLogBatch {
+        guard let handle else { return ServerLogBatch() }
         do {
             let end = try handle.seekToEnd()
             if end < offset {
                 offset = 0
                 parser.reset()
             }
-            guard end > offset else { return [] }
+            guard end > offset else { return ServerLogBatch() }
             try handle.seek(toOffset: offset)
             let data = try handle.readToEnd() ?? Data()
             offset += UInt64(data.count)
-            return parser.ingest(data)
+            let updates = parser.ingest(data)
+            return ServerLogBatch(
+                updates: updates,
+                sawRequestActivity: parser.sawRequestActivity
+            )
         } catch {
-            return []
+            return ServerLogBatch()
         }
     }
 

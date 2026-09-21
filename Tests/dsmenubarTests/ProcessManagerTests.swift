@@ -139,10 +139,13 @@ final class ProcessManagerTests: XCTestCase {
             }
         }
 
-        // Step 1 lands while monitoring is off and must never be reported.
+        // Step 1 lands while monitoring is off and must never be reported, but
+        // it still counts as activity: tracking is not gated by the display.
         XCTAssertNotNil(manager.launch(configuration: configuration))
         try await write(step: 1, at: stepURL, awaiting: 1, in: logURL)
         XCTAssertEqual(updates, [])
+        try await waitForUsage(manager)
+        XCTAssertNotNil(manager.lastUsageAt)
 
         manager.setPerformanceMonitoring(true)
         try await write(step: 2, at: stepURL, awaiting: 2, in: logURL)
@@ -159,6 +162,7 @@ final class ProcessManagerTests: XCTestCase {
         try await write(step: 3, at: stepURL, awaiting: 3, in: logURL)
         try await settle()
         XCTAssertEqual(updates.count, afterDisabling)
+        XCTAssertNotNil(manager.lastUsageAt, "tracking must survive disabling the display")
         XCTAssertTrue(manager.isProcessRunning)
     }
 
@@ -706,6 +710,401 @@ final class ProcessManagerTests: XCTestCase {
             // this is the whole path, child process included.
             XCTAssertTrue(manager.isProcessRunning, host)
         }
+    }
+
+    // MARK: - Forced kill
+
+    /// SIGTERM to a stopped or wedged server stays pending, so the forced kill
+    /// is what actually ends it.
+    func testTerminateForcesAKillWhenSigtermIsIgnored() async throws {
+        let server = try makeFakeServer(ignoresSigterm: true, lifetimeSeconds: 60, name: "force-kill")
+        defer { try? FileManager.default.removeItem(at: server.directory) }
+
+        let grace: TimeInterval = 0.5
+        let manager = ProcessManager(forceKillGrace: grace)
+        var info: TerminationInfo?
+        let terminated = expectation(description: "the forced kill reports termination")
+        manager.onTerminated = { info = $0; terminated.fulfill() }
+
+        XCTAssertNotNil(manager.launch(configuration: configuration(for: server)))
+        try await waitForFakeServerReady(server)
+        let started = Date()
+        manager.terminate()
+        await fulfillment(of: [terminated], timeout: 5)
+
+        let elapsed = Date().timeIntervalSince(started)
+        XCTAssertGreaterThanOrEqual(elapsed, grace, "SIGTERM must get its full grace")
+        XCTAssertLessThan(elapsed, grace + 2, "the kill must land promptly after the grace")
+        XCTAssertEqual(info?.intentional, true)
+        XCTAssertEqual(info?.clean, false, "a SIGKILL is not a clean exit")
+        XCTAssertFalse(manager.isProcessRunning)
+    }
+
+    func testTerminateDoesNotForceKillAServerThatExitsOnSigterm() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dsmenubar-clean-stop-\(UUID().uuidString)")
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: directory) }
+
+        // The shell exits 0 when SIGTERM arrives; the sleep loop keeps it alive.
+        let serverURL = directory.appendingPathComponent("ds4-server")
+        let readyMarker = directory.appendingPathComponent("ready")
+        let script = """
+        #!/bin/sh
+        trap 'exit 0' TERM
+        touch '\(readyMarker.path)'
+        while true; do /bin/sleep 0.05; done
+        """
+        try Data(script.utf8).write(to: serverURL)
+        try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: serverURL.path)
+        let modelURL = directory.appendingPathComponent("model.gguf")
+        try makeGGUF(architecture: "glm5-next").write(to: modelURL)
+
+        var config = ServerConfiguration.Config()
+        config.serverPath = serverURL.path
+        config.modelPath = modelURL.path
+        config.logPath = directory.appendingPathComponent("server.log").path
+        config.kvDiskEnabled = false
+
+        let manager = ProcessManager(forceKillGrace: 5)
+        var info: TerminationInfo?
+        let terminated = expectation(description: "termination")
+        manager.onTerminated = { info = $0; terminated.fulfill() }
+        XCTAssertNotNil(manager.launch(configuration: config))
+        let deadline = Date().addingTimeInterval(5)
+        while !fileManager.fileExists(atPath: readyMarker.path), Date() < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertTrue(
+            fileManager.fileExists(atPath: readyMarker.path),
+            "the fake server never signalled readiness"
+        )
+
+        let started = Date()
+        manager.terminate()
+        await fulfillment(of: [terminated], timeout: 3)
+
+        XCTAssertLessThan(
+            Date().timeIntervalSince(started), 2,
+            "a server that exits on SIGTERM must not wait out the grace"
+        )
+        XCTAssertEqual(info?.clean, true)
+    }
+
+    func testRepeatedTerminateDoesNotPostponeTheForcedKill() async throws {
+        let server = try makeFakeServer(ignoresSigterm: true, lifetimeSeconds: 60, name: "repeat-terminate")
+        defer { try? FileManager.default.removeItem(at: server.directory) }
+
+        let grace: TimeInterval = 1.5
+        let manager = ProcessManager(forceKillGrace: grace)
+        let terminated = expectation(description: "termination")
+        manager.onTerminated = { _ in terminated.fulfill() }
+        XCTAssertNotNil(manager.launch(configuration: configuration(for: server)))
+        try await waitForFakeServerReady(server)
+
+        let started = Date()
+        manager.terminate()
+        try await Task.sleep(for: .milliseconds(400))
+        // A second terminate must not push the deadline to 0.4 + grace.
+        manager.terminate()
+        await fulfillment(of: [terminated], timeout: 5)
+
+        XCTAssertLessThan(
+            Date().timeIntervalSince(started), grace + 0.4,
+            "a repeated terminate must not postpone the kill"
+        )
+    }
+
+    func testForcedKillForASupersededRunDoesNotTouchItsReplacement() async throws {
+        let serverA = try makeFakeServer(ignoresSigterm: true, lifetimeSeconds: 3, name: "supersede-a")
+        defer { try? FileManager.default.removeItem(at: serverA.directory) }
+        let serverB = try makeFakeServer(ignoresSigterm: false, lifetimeSeconds: 60, name: "supersede-b")
+        defer { try? FileManager.default.removeItem(at: serverB.directory) }
+
+        let manager = ProcessManager(forceKillGrace: 0.5)
+        XCTAssertNotNil(manager.launch(configuration: configuration(for: serverA)))
+        try await waitForFakeServerReady(serverA)
+        let pidA = try XCTUnwrap(manager.currentPID)
+
+        // Stop A (arming its forced kill), then hand the manager a new run
+        // before that timer can fire.
+        manager.terminate()
+        XCTAssertNotNil(manager.launch(configuration: configuration(for: serverB)))
+        let pidB = try XCTUnwrap(manager.currentPID)
+        XCTAssertNotEqual(pidA, pidB)
+
+        try await Task.sleep(for: .seconds(1.5))
+        XCTAssertTrue(manager.isProcessRunning)
+        XCTAssertEqual(manager.currentPID, pidB, "A's timer must not kill B")
+        manager.terminate()
+    }
+
+    func testAManualStopClearsARecordedFailureReason() async throws {
+        let server = try makeFakeServer(ignoresSigterm: false, lifetimeSeconds: 60, name: "manual-stop")
+        defer { try? FileManager.default.removeItem(at: server.directory) }
+
+        let manager = ProcessManager()
+        var info: TerminationInfo?
+        let terminated = expectation(description: "termination")
+        manager.onTerminated = { info = $0; terminated.fulfill() }
+        XCTAssertNotNil(manager.launch(configuration: configuration(for: server)))
+
+        // The health checker records why it is stopping, then the user stops it
+        // by hand during the grace.
+        manager.terminate(withFailureReason: "unreachable for 3 checks")
+        manager.terminate()
+        await fulfillment(of: [terminated], timeout: 5)
+
+        XCTAssertNil(info?.failureReason, "a manual stop supersedes the recorded failure")
+        XCTAssertEqual(info?.intentional, true)
+    }
+
+    func testRestartForcesAKillAndStillReportsThePendingRelaunch() async throws {
+        let server = try makeFakeServer(ignoresSigterm: true, lifetimeSeconds: 60, name: "restart-kill")
+        defer { try? FileManager.default.removeItem(at: server.directory) }
+
+        let grace: TimeInterval = 0.5
+        let manager = ProcessManager(forceKillGrace: grace)
+        var info: TerminationInfo?
+        let terminated = expectation(description: "termination")
+        manager.onTerminated = { info = $0; terminated.fulfill() }
+        XCTAssertNotNil(manager.launch(configuration: configuration(for: server)))
+        try await waitForFakeServerReady(server)
+
+        let started = Date()
+        manager.restart()
+        await fulfillment(of: [terminated], timeout: 5)
+
+        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(started), grace)
+        XCTAssertEqual(info?.pendingRestart, true, "the relaunch callback must still fire")
+        XCTAssertEqual(info?.clean, false)
+    }
+
+    // MARK: - Last usage
+
+    func testAServedRequestSetsLastUsage() async throws {
+        let server = try makeUsageServer(
+            delay: 0.1,
+            record: Self.prefillRecord,
+            name: "usage"
+        )
+        defer { try? FileManager.default.removeItem(at: server.directory) }
+
+        let manager = ProcessManager()
+        XCTAssertNil(manager.lastUsageAt)
+        XCTAssertNotNil(manager.launch(configuration: server.config))
+        defer { if manager.isProcessRunning { manager.terminate() } }
+
+        try await waitForUsage(manager)
+        XCTAssertNotNil(manager.lastUsageAt)
+    }
+
+    func testRelaunchingClearsLastUsage() async throws {
+        let serverA = try makeUsageServer(
+            delay: 0.1,
+            record: Self.prefillRecord,
+            name: "usage-relaunch-a"
+        )
+        defer { try? FileManager.default.removeItem(at: serverA.directory) }
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dsmenubar-usage-relaunch-b-\(UUID().uuidString)")
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: directory) }
+        let serverURL = directory.appendingPathComponent("ds4-server")
+        try Data("#!/bin/sh\nexec /bin/sleep 60\n".utf8).write(to: serverURL)
+        try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: serverURL.path)
+        let modelURL = directory.appendingPathComponent("model.gguf")
+        try makeGGUF(architecture: "glm5-next").write(to: modelURL)
+        var configB = ServerConfiguration.Config()
+        configB.serverPath = serverURL.path
+        configB.modelPath = modelURL.path
+        configB.logPath = directory.appendingPathComponent("server.log").path
+        configB.kvDiskEnabled = false
+
+        let manager = ProcessManager()
+        XCTAssertNotNil(manager.launch(configuration: serverA.config))
+        try await waitForUsage(manager)
+        XCTAssertNotNil(manager.lastUsageAt)
+
+        manager.terminate()
+        let deadline = Date().addingTimeInterval(3)
+        while manager.isProcessRunning, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        try await Task.sleep(for: .milliseconds(100))
+
+        XCTAssertNotNil(manager.launch(configuration: configB))
+        defer { if manager.isProcessRunning { manager.terminate() } }
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertNil(manager.lastUsageAt, "a new run starts unused")
+    }
+
+    func testARequestStartLineCountsAsActivity() async throws {
+        let server = try makeUsageServer(
+            delay: 0.1,
+            record: "0921 12:00:00 ds4-server: chat ctx=0..27291:27291 TOOLS prompt start",
+            name: "usage-prompt-start"
+        )
+        defer { try? FileManager.default.removeItem(at: server.directory) }
+
+        let manager = ProcessManager()
+        XCTAssertNotNil(manager.launch(configuration: server.config))
+        defer { if manager.isProcessRunning { manager.terminate() } }
+
+        try await waitForUsage(manager)
+        XCTAssertNotNil(manager.lastUsageAt, "a request start with no rate is still activity")
+    }
+
+    func testAStaleBatchDoesNotRecordUsage() throws {
+        let manager = ProcessManager()
+        manager.applyPerformanceBatch(
+            ServerLogBatch(updates: [], sawRequestActivity: true),
+            monitorID: UUID()
+        )
+        XCTAssertNil(manager.lastUsageAt, "a batch belonging to no run must be dropped")
+    }
+
+    func testARecordWrittenJustBeforeStopIsCounted() async throws {
+        let server = try makeUsageServer(
+            delay: 0,
+            record: Self.prefillRecord,
+            name: "usage-stopped"
+        )
+        defer { try? FileManager.default.removeItem(at: server.directory) }
+
+        let manager = ProcessManager()
+        XCTAssertNotNil(manager.launch(configuration: server.config))
+        // Wait only until the record is in the file, then stop at once: whether
+        // the write event or the stop-time drain consumes it, it must count.
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            let log = (try? String(contentsOfFile: server.logPath, encoding: .utf8)) ?? ""
+            if log.contains("avg=") { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        manager.terminate()
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertNotNil(manager.lastUsageAt)
+    }
+
+    private struct UsageServer {
+        let directory: URL
+        let config: ServerConfiguration.Config
+        let logPath: String
+    }
+
+    private static let prefillRecord =
+        "0921 12:00:00 ds4-server: chat ctx=0..10:10 prefill chunk 1/2 (50.0%) "
+        + "chunk=12.34 t/s avg=12.34 t/s 0.100s"
+
+    /// A server that writes one log record after `delay` seconds and then stays
+    /// alive, with the GGUF and config a launch needs.
+    private func makeUsageServer(
+        delay: TimeInterval,
+        record: String,
+        name: String
+    ) throws -> UsageServer {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dsmenubar-\(name)-\(UUID().uuidString)")
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        let serverURL = directory.appendingPathComponent("ds4-server")
+        let logPath = directory.appendingPathComponent("server.log").path
+        let script = """
+        #!/bin/sh
+        /bin/sleep \(delay)
+        echo "\(record)"
+        exec /bin/sleep 60
+        """
+        try Data(script.utf8).write(to: serverURL)
+        try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: serverURL.path)
+        let modelURL = directory.appendingPathComponent("model.gguf")
+        try makeGGUF(architecture: "glm5-next").write(to: modelURL)
+
+        var config = ServerConfiguration.Config()
+        config.serverPath = serverURL.path
+        config.modelPath = modelURL.path
+        config.logPath = logPath
+        config.kvDiskEnabled = false
+        return UsageServer(directory: directory, config: config, logPath: logPath)
+    }
+
+    private func waitForUsage(_ manager: ProcessManager, timeout: TimeInterval = 6) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while manager.lastUsageAt == nil, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
+    // MARK: - Fake server helpers
+
+    private struct FakeServer {
+        let directory: URL
+        let serverURL: URL
+        let modelURL: URL
+        let logPath: String
+        /// Written by the script once its signal handling is installed. A
+        /// SIGTERM sent before that would kill the shell on its default
+        /// disposition, which is what makes the tests race without it.
+        let readyMarker: URL
+    }
+
+    private func makeFakeServer(
+        ignoresSigterm: Bool,
+        lifetimeSeconds: Int,
+        name: String
+    ) throws -> FakeServer {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dsmenubar-\(name)-\(UUID().uuidString)")
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let serverURL = directory.appendingPathComponent("ds4-server")
+        let readyMarker = directory.appendingPathComponent("ready")
+        // `trap ''` sets SIG_IGN, and an ignored signal survives `exec`, so the
+        // sleep really does ignore SIGTERM. A normal trap would be replaced
+        // before it could run and the forced kill would never be exercised.
+        let body = ignoresSigterm
+            ? "trap '' TERM\ntouch '\(readyMarker.path)'\nexec /bin/sleep \(lifetimeSeconds)"
+            : "exec /bin/sleep \(lifetimeSeconds)"
+        try Data("#!/bin/sh\n\(body)\n".utf8).write(to: serverURL)
+        try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: serverURL.path)
+
+        let modelURL = directory.appendingPathComponent("model.gguf")
+        try makeGGUF(architecture: "glm5-next").write(to: modelURL)
+
+        return FakeServer(
+            directory: directory,
+            serverURL: serverURL,
+            modelURL: modelURL,
+            logPath: directory.appendingPathComponent("server.log").path,
+            readyMarker: readyMarker
+        )
+    }
+
+    /// Wait until the fake server has installed its signal handling.
+    private func waitForFakeServerReady(_ server: FakeServer) async throws {
+        let deadline = Date().addingTimeInterval(5)
+        while !FileManager.default.fileExists(atPath: server.readyMarker.path),
+              Date() < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: server.readyMarker.path),
+            "the fake server never signalled readiness"
+        )
+    }
+
+    private func configuration(for server: FakeServer) -> ServerConfiguration.Config {
+        var config = ServerConfiguration.Config()
+        config.serverPath = server.serverURL.path
+        config.modelPath = server.modelURL.path
+        config.logPath = server.logPath
+        config.kvDiskEnabled = false
+        return config
     }
 
     private func makeGGUF(architecture: String, version: UInt32 = 3) -> Data {

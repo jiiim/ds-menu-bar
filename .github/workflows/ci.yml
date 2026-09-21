@@ -73,7 +73,7 @@ jobs:
           plist_path="$app_path/Contents/Info.plist"
 
           test "$(plutil -extract CFBundleIdentifier raw "$plist_path")" = com.jiiim.ds-menu-bar
-          test "$(plutil -extract CFBundleShortVersionString raw "$plist_path")" = 0.0.8
-          test "$(plutil -extract CFBundleVersion raw "$plist_path")" = 9
+          test "$(plutil -extract CFBundleShortVersionString raw "$plist_path")" = 0.0.9
+          test "$(plutil -extract CFBundleVersion raw "$plist_path")" = 10
           test "$(lipo -archs "$executable_path")" = arm64
           codesign --verify --deep --strict --verbose=2 "$app_path"

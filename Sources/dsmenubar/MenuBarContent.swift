@@ -61,6 +61,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private let statusItem: NSStatusItem
     private var cancellables = Set<AnyCancellable>()
     private var blinkTimer: AnyCancellable?
+    private var activityRefreshTimer: AnyCancellable?
     private var blinkOn = false
     private var menuIsOpen = false
     private var rendered: RenderedStatusItem?
@@ -68,6 +69,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     private let serverItem = NSMenuItem(title: "ds4-server", action: nil, keyEquivalent: "")
     private let statusTextItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private let lastActivityItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let serverActionItem = NSMenuItem(title: "", action: nil, keyEquivalent: "s")
     private let speedItem = NSMenuItem(
         title: "Show Speeds in Menu Bar",
@@ -113,10 +115,19 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) {
         menuIsOpen = true
         refreshMenu()
+        // The relative time would otherwise freeze at whatever it read when the
+        // menu opened, so keep recomputing it while the menu is up.
+        activityRefreshTimer = Timer.publish(every: 1, on: .main, in: .common)
+            .autoconnect()
+            .sink { [weak self] _ in
+                self?.updateLastActivityItem()
+            }
     }
 
     func menuDidClose(_ menu: NSMenu) {
         menuIsOpen = false
+        activityRefreshTimer?.cancel()
+        activityRefreshTimer = nil
     }
 
     private func makeMenu() -> NSMenu {
@@ -126,6 +137,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
         serverItem.isEnabled = false
         statusTextItem.isEnabled = false
+        lastActivityItem.isEnabled = false
         serverActionItem.target = self
         serverActionItem.action = #selector(toggleServer)
         serverActionItem.keyEquivalentModifierMask = .command
@@ -139,6 +151,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(serverItem)
         menu.addItem(statusTextItem)
+        menu.addItem(lastActivityItem)
         menu.addItem(.separator())
         menu.addItem(serverActionItem)
         menu.addItem(item("Open Log in Console", action: #selector(openLog)))
@@ -278,6 +291,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     private func refreshMenu() {
         statusTextItem.title = "Status: \(server.status.menuText)"
+        updateLastActivityItem()
         serverActionItem.title = server.status.actionTitle
         speedItem.state = server.showsPerformanceInMenuBar ? .on : .off
         // The check mark is the preference. The subtitle is what it is doing
@@ -286,6 +300,14 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         // was not would be worse than no item at all.
         keepAwakeItem.state = server.keepsAwakeWhileRunning ? .on : .off
         keepAwakeItem.subtitle = server.keepAwakeState.menuSubtitle
+    }
+
+    private func updateLastActivityItem() {
+        lastActivityItem.title = ServerActivityRecency.menuTitle(
+            for: server.status,
+            activity: server.lastServerUsageAt,
+            now: Date()
+        )
     }
 
     @objc private func toggleServer() {

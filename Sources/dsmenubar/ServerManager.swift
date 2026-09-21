@@ -65,18 +65,24 @@ extension ServerStatus {
 final class ServerManager: ObservableObject {
     // MARK: - Components
 
-    let config = ServerConfiguration()
-    private let processManager = ProcessManager()
-    private let healthChecker = HealthChecker()
+    let config: ServerConfiguration
+    private let processManager: ProcessManager
+    private let healthChecker: HealthChecker
+    private let stabilityWindow: TimeInterval
     private let log = OSLog(subsystem: "com.jiiim.ds-menu-bar", category: "orchestrator")
 
+    /// Injected by tests to count notifications instead of observing banners.
+    typealias NotificationSink = (_ title: String, _ body: String) -> Void
+    private let notificationSink: NotificationSink?
+
     @Published private(set) var status: ServerStatus = .stopped {
-        didSet { refreshKeepAwake() }
+        didSet { statusDidChange(from: oldValue) }
     }
     @Published private(set) var performance: ServerPerformance = .idle
     @Published private(set) var showsPerformanceInMenuBar: Bool
     @Published private(set) var keepsAwakeWhileRunning: Bool
     @Published private(set) var confirmQuitWhileServerActive: Bool
+    @Published private(set) var autoRestartServer: Bool
     @Published private(set) var keepAwakeState: KeepAwakeState = .off
 
     // ASCII only: pmset mangles non-ASCII in assertion names, and the name
@@ -99,12 +105,38 @@ final class ServerManager: ObservableObject {
     private var activeLaunchAttemptID: UUID?
     private var reportedLaunchAttemptID: UUID?
 
+    /// One automatic restart per incident. Set when an automatic restart is
+    /// started, cleared only after a run has been healthy for
+    /// `stabilityWindow`. A manual start does not clear it.
+    private var autoRestartAttempted = false
+    /// Armed when an automatic restart begins, posted when the replacement
+    /// reaches `.running`, and dropped if the restart is cancelled or fails:
+    /// the user should read about a restart that happened, not one that is
+    /// still loading.
+    private var pendingRestartNotice: (title: String, body: String)?
+    /// Bumped whenever a run becomes healthy. The stability work item captures
+    /// it, so a stale item cannot clear a newer run's episode.
+    private var healthGeneration = 0
+    private var stabilityWorkItem: DispatchWorkItem?
+
     // MARK: - Init
 
-    init() {
+    init(
+        config: ServerConfiguration = ServerConfiguration(),
+        processManager: ProcessManager = ProcessManager(),
+        healthChecker: HealthChecker = HealthChecker(),
+        stabilityWindow: TimeInterval = AutoRestartPolicy.stabilityWindow,
+        notificationSink: NotificationSink? = nil
+    ) {
+        self.config = config
+        self.processManager = processManager
+        self.healthChecker = healthChecker
+        self.stabilityWindow = stabilityWindow
+        self.notificationSink = notificationSink
         showsPerformanceInMenuBar = config.showsPerformanceInMenuBar
         keepsAwakeWhileRunning = config.keepsAwakeWhileRunning
         confirmQuitWhileServerActive = config.confirmQuitWhileServerActive
+        autoRestartServer = config.autoRestartServer
         wireCallbacks()
         processManager.setPerformanceMonitoring(showsPerformanceInMenuBar)
         externalPower.onChange = { [weak self] in
@@ -167,8 +199,13 @@ final class ServerManager: ObservableObject {
                 // that stop is "intentional" at the process layer and the server
                 // may even handle it as a clean exit. Neither outcome turns the
                 // health failure into a user-requested stop.
-                self.status = .error(reason)
-                self.postNotification(title: "ds4-server stopped", body: reason)
+                if self.autoRestartIfAllowed(
+                    title: "ds4-server was unresponsive",
+                    completionBody: "It stopped answering health checks and has been restarted."
+                ) {
+                    return
+                }
+                self.reportStopped(title: "ds4-server stopped", reason: reason)
             } else if info.intentional {
                 self.activeLaunchSource = nil
                 self.activeLaunchAttemptID = nil
@@ -180,20 +217,22 @@ final class ServerManager: ObservableObject {
                 let reason = detail.isEmpty ? "ds4-server exited during startup" : detail
                 self.status = .error(reason)
                 self.reportLaunchFailure(reason)
-            } else if info.clean {
-                self.activeLaunchSource = nil
-                self.activeLaunchAttemptID = nil
-                self.status = .stopped
             } else {
-                // Spontaneous, unexpected exit — a genuine crash.
+                // Spontaneous exit while the run was healthy. A clean status is
+                // not evidence of intent: the app marks its own stops with
+                // `intentionalStop`, and ds4-server exits 0 when something else
+                // sends it SIGTERM (`pkill`, say). Treat every unrequested exit
+                // as unexpected, clean or not.
                 let how = "exited unexpectedly"
                 let detail = self.lastLogReason()
                 let fullDetail = detail.isEmpty ? "" : " — \(detail)"
                 let msg = "ds4-server \(how)\(fullDetail)"
-                self.status = .error(msg)
-                self.postNotification(
-                    title: "ds4-server crashed",
-                    body: "The server exited unexpectedly.\(fullDetail)")
+                let title = info.clean ? "ds4-server stopped unexpectedly" : "ds4-server crashed"
+                let completion = info.clean
+                    ? "It was terminated from outside the app and has been restarted."
+                    : "It exited unexpectedly and has been restarted."
+                if self.autoRestartIfAllowed(title: title, completionBody: completion) { return }
+                self.reportStopped(title: title, reason: msg)
             }
         }
 
@@ -209,6 +248,10 @@ final class ServerManager: ObservableObject {
 
         healthChecker.onUnreachable = { [weak self] reason in
             guard let self = self else { return }
+            // No further polls: this run is being stopped. The reaper reports
+            // and decides about a restart once the child is actually gone.
+            self.healthChecker.stop()
+            self.status = .stopping
             self.processManager.terminate(withFailureReason: reason)
         }
 
@@ -236,10 +279,111 @@ final class ServerManager: ObservableObject {
         }
     }
 
+    // MARK: - Auto-restart
+
+    private func statusDidChange(from old: ServerStatus) {
+        refreshKeepAwake()
+        guard status != old else { return }
+        postPendingRestartNoticeIfFinished()
+        if case .running = status {
+            armStabilityWindow()
+        } else {
+            stabilityWorkItem?.cancel()
+            stabilityWorkItem = nil
+        }
+    }
+
+    /// Announce a finished automatic restart, and drop the notice if the
+    /// restart was cancelled or failed (its own report covers that).
+    private func postPendingRestartNoticeIfFinished() {
+        guard let notice = pendingRestartNotice else { return }
+        switch status {
+        case .running:
+            pendingRestartNotice = nil
+            postNotification(title: notice.title, body: notice.body)
+        case .stopped, .error:
+            pendingRestartNotice = nil
+        case .starting, .stopping, .restarting:
+            break
+        }
+    }
+
+    /// Start the window that closes an auto-restart episode. Cancelling a work
+    /// item is not proof its block did not run, so the block re-checks the
+    /// generation and the status before clearing the ledger.
+    private func armStabilityWindow() {
+        healthGeneration &+= 1
+        let generation = healthGeneration
+        stabilityWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            guard self.healthGeneration == generation, case .running = self.status else {
+                return
+            }
+            self.autoRestartAttempted = false
+        }
+        stabilityWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + stabilityWindow, execute: work)
+    }
+
+    /// Restart automatically when the policy allows it. Returns true when a
+    /// relaunch was started, in which case the caller reports nothing. The
+    /// notice is armed here and posted once the replacement is running, so it
+    /// describes a restart that happened rather than one still in progress.
+    private func autoRestartIfAllowed(title: String, completionBody: String) -> Bool {
+        let decision = AutoRestartPolicy.decision(
+            preferenceEnabled: autoRestartServer,
+            restartable: true,
+            attemptedThisEpisode: autoRestartAttempted
+        )
+        guard decision == .restart else { return false }
+        autoRestartAttempted = true
+        activeLaunchSource = .restart
+        activeLaunchAttemptID = UUID()
+        pendingRestartNotice = (title: title, body: completionBody)
+        status = .restarting
+        startWhenPortAvailable()
+        return true
+    }
+
+    /// Report a restartable failure without relaunching. The body names the
+    /// reason and says why nothing restarted: the preference is off, or this
+    /// incident's one automatic restart is already spent.
+    private func reportStopped(title: String, reason: String) {
+        activeLaunchSource = nil
+        activeLaunchAttemptID = nil
+        status = .error(reason)
+        let explanation: String?
+        if !autoRestartServer {
+            explanation = "Automatic restart is off."
+        } else if autoRestartAttempted {
+            explanation = "Automatic restart is not repeating."
+        } else {
+            explanation = nil
+        }
+        let body = explanation.map { Self.sentence($0, after: reason) } ?? reason
+        postNotification(title: title, body: body)
+    }
+
+    /// Join a reason and an explanation into one notification body, adding a
+    /// period when the reason (often a raw log line) does not end with one.
+    private static func sentence(_ explanation: String, after reason: String) -> String {
+        let trimmed = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return explanation }
+        guard let last = trimmed.last, ".!?".contains(last) else {
+            return "\(trimmed). \(explanation)"
+        }
+        return "\(trimmed) \(explanation)"
+    }
+
     // MARK: - Configuration
 
     /// The server log path, for the menu-bar "Open Log in Console" action.
     var logPath: String { config.logPath }
+
+    /// When the current run last served a request, read by the status menu
+    /// when it opens. Not published: the menu recomputes on every refresh.
+    var lastServerUsageAt: Date? { processManager.lastUsageAt }
 
     /// Apply the menu-bar display preference immediately without restarting the
     /// managed server. ProcessManager starts or stops its incremental log reader.
@@ -270,6 +414,13 @@ final class ServerManager: ObservableObject {
         guard requested != confirmQuitWhileServerActive else { return }
         config.setConfirmQuitWhileServerActive(requested)
         confirmQuitWhileServerActive = requested
+    }
+
+    /// Apply the auto-restart preference immediately, on the same terms.
+    func setAutoRestartServer(_ requested: Bool) {
+        guard requested != autoRestartServer else { return }
+        config.setAutoRestartServer(requested)
+        autoRestartServer = requested
     }
 
     /// Snapshot used by Settings to edit a draft without mutating the running
@@ -346,6 +497,14 @@ final class ServerManager: ObservableObject {
             break  // keep .restarting until healthy
         case .starting, .running, .stopping:
             return  // re-entrant guard
+        }
+
+        // A hand-started run earns a fresh automatic-restart attempt: the user
+        // has intervened, so the incident's spent ledger should not suppress
+        // recovery from a later unrelated failure. Internal relaunches
+        // (.restart) keep the ledger.
+        if source == .manual {
+            autoRestartAttempted = false
         }
 
         activeLaunchSource = source
@@ -587,6 +746,10 @@ final class ServerManager: ObservableObject {
         categoryIdentifier: String? = nil,
         userInfo: [String: String] = [:]
     ) {
+        if let notificationSink {
+            notificationSink(title, body)
+            return
+        }
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body

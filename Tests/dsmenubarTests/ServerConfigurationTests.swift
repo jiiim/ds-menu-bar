@@ -95,6 +95,49 @@ final class ServerConfigurationTests: XCTestCase {
         XCTAssertTrue(ServerConfiguration(defaults: defaults).confirmQuitWhileServerActive)
     }
 
+    func testAutoRestartPreferenceDefaultsOn() throws {
+        let suiteName = "dsmenubar-tests-\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Unable to create isolated defaults")
+            return
+        }
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertTrue(ServerConfiguration(defaults: defaults).autoRestartServer)
+    }
+
+    func testAutoRestartPreferencePersistsOutsideServerConfig() throws {
+        let suiteName = "dsmenubar-tests-\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Unable to create isolated defaults")
+            return
+        }
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let configuration = ServerConfiguration(defaults: defaults)
+        let serverConfig = configuration.snapshot()
+        XCTAssertTrue(configuration.autoRestartServer)
+
+        configuration.setAutoRestartServer(false)
+
+        XCTAssertFalse(configuration.autoRestartServer)
+        XCTAssertEqual(configuration.snapshot(), serverConfig)
+        XCTAssertFalse(ServerConfiguration(defaults: defaults).autoRestartServer)
+    }
+
+    func testAutoRestartDefaultsOnForASuiteWithOnlyUnrelatedKeys() throws {
+        let suiteName = "dsmenubar-tests-\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Unable to create isolated defaults")
+            return
+        }
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        defaults.set(true, forKey: "dsmenubar.keepAwakeWhileServerRuns")
+
+        XCTAssertTrue(ServerConfiguration(defaults: defaults).autoRestartServer)
+    }
+
     func testQuitConfirmationDefaultDoesNotPolluteTheRegistrationDomain() throws {
         let suiteName = "dsmenubar-tests-\(UUID().uuidString)"
         let otherSuiteName = "dsmenubar-tests-\(UUID().uuidString)"

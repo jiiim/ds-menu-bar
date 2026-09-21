@@ -124,6 +124,13 @@ struct SettingsView: View {
         )
     }
 
+    var autoRestartBinding: Binding<Bool> {
+        Binding(
+            get: { server.autoRestartServer },
+            set: { server.setAutoRestartServer($0) }
+        )
+    }
+
     var applyTitle: String {
         switch server.status {
         case .starting, .running, .restarting:

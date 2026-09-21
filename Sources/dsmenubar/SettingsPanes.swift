@@ -47,6 +47,15 @@ extension SettingsView {
                     + "or restarting. Quitting stops the server and interrupts "
                     + "connected clients."
                 )
+                Toggle(
+                    "Restart the server automatically after a crash or if it stops responding",
+                    isOn: autoRestartBinding
+                )
+                .help(
+                    "One automatic restart per incident. If it stops again "
+                    + "before it has been healthy for five minutes, it stays "
+                    + "stopped and reports the problem."
+                )
                 LabeledContent("Platform") {
                     Text("macOS • Apple silicon • Metal")
                         .foregroundStyle(.secondary)
