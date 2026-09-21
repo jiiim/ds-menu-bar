@@ -80,7 +80,10 @@ struct InitialSetupView: View {
 
             HStack {
                 Button("Quit") {
-                    NSApplication.shared.terminate(nil)
+                    // Routed through the delegate so the quit policy has one
+                    // entry point. It always proceeds from here: the server
+                    // cannot be starting or running before setup completes.
+                    NSApp.sendAction(#selector(AppDelegate.requestQuit(_:)), to: nil, from: nil)
                 }
                 Spacer()
                 Button("Continue", action: continueSetup)

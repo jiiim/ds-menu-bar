@@ -75,9 +75,9 @@ enum MainMenu {
         ))
         menu.addItem(item("Show All", #selector(NSApplication.unhideAllApplications(_:))))
         menu.addItem(.separator())
-        // terminate: routes through applicationWillTerminate, which reaps the
-        // child process — the same cleanup the status item's Quit performs.
-        menu.addItem(item("Quit DS Menu Bar", #selector(NSApplication.terminate(_:)), key: "q"))
+        // The delegate owns the quit decision: it prompts while the server is
+        // active. terminate: would skip that and go straight to teardown.
+        menu.addItem(item("Quit DS Menu Bar", #selector(AppDelegate.requestQuit(_:)), key: "q"))
         return menu
     }
 

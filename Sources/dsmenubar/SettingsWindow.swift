@@ -117,6 +117,13 @@ struct SettingsView: View {
         )
     }
 
+    var quitConfirmationBinding: Binding<Bool> {
+        Binding(
+            get: { server.confirmQuitWhileServerActive },
+            set: { server.setConfirmQuitWhileServerActive($0) }
+        )
+    }
+
     var applyTitle: String {
         switch server.status {
         case .starting, .running, .restarting:

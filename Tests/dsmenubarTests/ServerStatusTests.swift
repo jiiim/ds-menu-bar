@@ -78,6 +78,19 @@ final class ServerStatusTests: XCTestCase {
         XCTAssertFalse(ServerStatus.error("x").holdsServerProcess)
     }
 
+    // MARK: - requiresQuitConfirmation
+
+    func testRequiresQuitConfirmation() {
+        XCTAssertTrue(ServerStatus.starting.requiresQuitConfirmation)
+        XCTAssertTrue(ServerStatus.restarting.requiresQuitConfirmation)
+        XCTAssertTrue(ServerStatus.running(pid: 1).requiresQuitConfirmation)
+        // .stopping matches holdsServerProcess but not this: a shutdown is
+        // already under way, so there is no work left to confirm stopping.
+        XCTAssertFalse(ServerStatus.stopping.requiresQuitConfirmation)
+        XCTAssertFalse(ServerStatus.stopped.requiresQuitConfirmation)
+        XCTAssertFalse(ServerStatus.error("x").requiresQuitConfirmation)
+    }
+
     // MARK: - Equatable
 
     func testEquatable() {

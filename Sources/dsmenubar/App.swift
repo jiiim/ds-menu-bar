@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import AppKit
+import CoreServices.AE
 import SwiftUI
 import UserNotifications
 
@@ -33,6 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private var statusBarController: StatusBarController?
     private var aboutWindowController: AboutWindowController?
     private var manualFailureAlertShowing = false
+    private var quitConfirmationShowing = false
     private var initialSetupWindowController: InitialSetupWindowController?
     private var initialSetupCompleted = false
     private var notificationAuthorizationRequested = false
@@ -65,7 +67,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 SettingsNavigation.open(.general)
                 AppActivation.windowOpened()
             },
-            openAbout: { [weak self] in self?.openAbout() }
+            openAbout: { [weak self] in self?.openAbout() },
+            requestQuit: { [weak self] in self?.requestQuitFromStatusMenu() }
         )
 
         server.onLaunchFailure = { [weak self] failure in
@@ -253,6 +256,158 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         }
         aboutWindowController?.showWindow(nil)
         AppActivation.windowOpened()
+    }
+
+    // MARK: - Quit
+
+    /// Quit from the app menu or Cmd-Q. The status-item menu reaches the same
+    /// decision through `requestQuitFromStatusMenu()`.
+    @objc func requestQuit(_ sender: Any?) {
+        requestQuit(afterMenuClose: false)
+    }
+
+    /// Quit from the status-item menu, whose menu is mid-close when its item
+    /// fires. See `presentQuitConfirmation`.
+    func requestQuitFromStatusMenu() {
+        requestQuit(afterMenuClose: true)
+    }
+
+    private func requestQuit(afterMenuClose: Bool) {
+        switch QuitConfirmation.decision(
+            status: server.status,
+            preferenceEnabled: server.confirmQuitWhileServerActive,
+            promptIsPending: quitConfirmationShowing
+        ) {
+        case .proceed:
+            NSApp.terminate(nil)
+
+        case .cancelDuplicate:
+            return
+
+        case .prompt:
+            quitConfirmationShowing = true
+            let status = server.status
+            presentQuitConfirmation(for: status, afterMenuClose: afterMenuClose) {
+                [weak self] confirmed in
+                guard let self else { return }
+                self.quitConfirmationShowing = false
+                guard confirmed else { return }
+                self.server.stop()
+                NSApp.terminate(nil)
+            }
+        }
+    }
+
+    /// Present the quit confirmation, then report whether it was confirmed.
+    ///
+    /// `afterMenuClose` reproduces the staging documented on
+    /// `presentManualLaunchFailure`: the status-item menu needs a full
+    /// event-loop turn to finish closing, and the alert is built a turn before
+    /// it runs. Cmd-Q and Dock Quit arrive outside menu tracking and run the
+    /// alert directly.
+    ///
+    /// Status can change while the alert is up. "Stop Server and Quit" stays
+    /// correct for every state the predicate accepted, because `stop()` is
+    /// safe whether or not a process is still live.
+    private func presentQuitConfirmation(
+        for status: ServerStatus,
+        afterMenuClose: Bool,
+        completion: @escaping (Bool) -> Void
+    ) {
+        if afterMenuClose {
+            DispatchQueue.main.async {
+                DispatchQueue.main.async {
+                    let alert = Self.makeQuitAlert(for: status)
+                    DispatchQueue.main.async {
+                        completion(Self.runQuitAlert(alert))
+                    }
+                }
+            }
+        } else {
+            completion(Self.runQuitAlert(Self.makeQuitAlert(for: status)))
+        }
+    }
+
+    private static func makeQuitAlert(for status: ServerStatus) -> NSAlert {
+        let alert = NSAlert()
+        alert.messageText = "Quit DS Menu Bar?"
+        switch status {
+        case .running:
+            alert.informativeText =
+                "ds4-server is running. Quitting stops it and interrupts any connected clients."
+        case .starting:
+            alert.informativeText =
+                "ds4-server is still starting. Quitting cancels the startup and the in-progress model load."
+        case .restarting:
+            alert.informativeText =
+                "ds4-server is restarting. Quitting cancels the restart and stops the server."
+        case .stopped, .stopping, .error:
+            // The predicate excludes these states. The wording keeps the alert
+            // from claiming work that is not happening if that ever changes.
+            alert.informativeText = "Quitting stops DS Menu Bar."
+        }
+        alert.addButton(withTitle: "Stop Server and Quit")
+        alert.addButton(withTitle: "Cancel")
+        alert.buttons.first?.keyEquivalent = "\r"
+        alert.buttons.last?.keyEquivalent = "\u{1b}"
+        return alert
+    }
+
+    private static func runQuitAlert(_ alert: NSAlert) -> Bool {
+        NSApp.unhide(nil)
+        NSApp.activate()
+        alert.window.center()
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    // MARK: - Dock Quit
+
+    /// The Dock's Quit arrives as an Apple event and bypasses the menu items,
+    /// so it is the one termination path that needs `applicationShouldTerminate`.
+    /// In-app quits call `terminate(nil)` with no current Apple event and fall
+    /// straight through, having prompted already.
+    ///
+    /// Only a quit sent by the Dock prompts. osascript, the `install` target's
+    /// quit, and loginwindow all return `.terminateNow`, so a scripted quit or
+    /// a logout never stalls on a dialog. If the sender cannot be resolved, the
+    /// quit proceeds: never prompt on an unidentified quit.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let event = NSAppleEventManager.shared().currentAppleEvent,
+              let senderPID = event.attributeDescriptor(forKeyword: keySenderPIDAttr)?.int32Value,
+              NSRunningApplication(processIdentifier: pid_t(senderPID))?.bundleIdentifier
+                  == "com.apple.dock"
+        else { return .terminateNow }
+
+        switch QuitConfirmation.decision(
+            status: server.status,
+            preferenceEnabled: server.confirmQuitWhileServerActive,
+            promptIsPending: quitConfirmationShowing
+        ) {
+        case .proceed:
+            return .terminateNow
+
+        case .cancelDuplicate:
+            return .terminateCancel
+
+        case .prompt:
+            quitConfirmationShowing = true
+            let status = server.status
+            // Strong self, and a reply on every path: a weak guard that failed
+            // here would leave the app un-quittable. The alert runs a turn
+            // later so this Apple event finishes dispatching first.
+            DispatchQueue.main.async {
+                var confirmed = false
+                defer {
+                    self.quitConfirmationShowing = false
+                    NSApp.reply(toApplicationShouldTerminate: confirmed)
+                }
+                confirmed = Self.runQuitAlert(Self.makeQuitAlert(for: status))
+                if confirmed {
+                    self.server.stop()
+                }
+            }
+            return .terminateLater
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

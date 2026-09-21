@@ -38,6 +38,15 @@ extension SettingsView {
                     + "sleeps, and closing the lid or sleeping from the Apple "
                     + "menu still sleeps the Mac."
                 )
+                Toggle(
+                    "Confirm before quitting while the server is active",
+                    isOn: quitConfirmationBinding
+                )
+                .help(
+                    "Asks before quitting when ds4-server is starting, running, "
+                    + "or restarting. Quitting stops the server and interrupts "
+                    + "connected clients."
+                )
                 LabeledContent("Platform") {
                     Text("macOS • Apple silicon • Metal")
                         .foregroundStyle(.secondary)

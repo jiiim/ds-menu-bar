@@ -37,6 +37,17 @@ extension ServerStatus {
         case .stopped, .error: return false
         }
     }
+
+    /// States where a quit interrupts work the user is waiting on: a model load
+    /// in progress or a live server with connected clients. `.stopping` is the
+    /// deliberate difference from `holdsServerProcess` — a shutdown is already
+    /// under way, so a prompt would ask about work that is already ending.
+    var requiresQuitConfirmation: Bool {
+        switch self {
+        case .starting, .restarting, .running: return true
+        case .stopped, .stopping, .error: return false
+        }
+    }
 }
 
 // MARK: - ServerManager (thin orchestrator)
@@ -65,6 +76,7 @@ final class ServerManager: ObservableObject {
     @Published private(set) var performance: ServerPerformance = .idle
     @Published private(set) var showsPerformanceInMenuBar: Bool
     @Published private(set) var keepsAwakeWhileRunning: Bool
+    @Published private(set) var confirmQuitWhileServerActive: Bool
     @Published private(set) var keepAwakeState: KeepAwakeState = .off
 
     // ASCII only: pmset mangles non-ASCII in assertion names, and the name
@@ -92,6 +104,7 @@ final class ServerManager: ObservableObject {
     init() {
         showsPerformanceInMenuBar = config.showsPerformanceInMenuBar
         keepsAwakeWhileRunning = config.keepsAwakeWhileRunning
+        confirmQuitWhileServerActive = config.confirmQuitWhileServerActive
         wireCallbacks()
         processManager.setPerformanceMonitoring(showsPerformanceInMenuBar)
         externalPower.onChange = { [weak self] in
@@ -248,6 +261,15 @@ final class ServerManager: ObservableObject {
         config.setKeepsAwakeWhileRunning(requested)
         keepsAwakeWhileRunning = requested
         refreshKeepAwake()
+    }
+
+    /// Apply the quit-confirmation preference immediately. Like the keep-awake
+    /// preference above, it is an app-only setting: it does not alter
+    /// ds4-server's command line and must not enter the Apply & Restart path.
+    func setConfirmQuitWhileServerActive(_ requested: Bool) {
+        guard requested != confirmQuitWhileServerActive else { return }
+        config.setConfirmQuitWhileServerActive(requested)
+        confirmQuitWhileServerActive = requested
     }
 
     /// Snapshot used by Settings to edit a draft without mutating the running

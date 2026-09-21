@@ -73,7 +73,7 @@ instructions and model-format information. DS Menu Bar does not include
 ### ds4-server version compatibility
 
 > [!IMPORTANT]
-> At the time of the DS Menu Bar v0.0.7 release, `ds4` does not publish
+> At the time of the DS Menu Bar v0.0.8 release, `ds4` does not publish
 > versioned releases. Compatibility is therefore tracked against specific
 > commits on its `main` branch, and DS Menu Bar is updated as upstream changes
 > are reviewed. The latest known compatible commit is
@@ -121,10 +121,11 @@ If the cask is listed as outdated, install the new version:
 brew upgrade --cask ds-menu-bar
 ```
 
-The upgrade quits DS Menu Bar if it is running, which stops the `ds4-server`
-process it manages. Your settings, including the selected executable and model
-paths, are stored outside the app bundle and survive the upgrade. Reopen
-DS Menu Bar and start the server again when the upgrade finishes.
+The upgrade no longer quits DS Menu Bar if it is running, and it does not stop
+the `ds4-server` process the app manages: the running app keeps serving until
+you quit and reopen it, which is when the new version starts. Your settings,
+including the selected executable and model paths, are stored outside the app
+bundle and survive the upgrade.
 
 Review the [ds4-server version compatibility](#ds4-server-version-compatibility)
 note after upgrading, in case the new release tracks a different upstream
@@ -171,8 +172,9 @@ Settings is organized into seven tabs. Available controls and defaults adapt
 to the selected model and the Mac's unified memory.
 
 - **General**: launch at login, the optional menu-bar throughput display,
-  keeping the Mac awake while the server runs, a preview of the command that
-  runs on Apply, and a restore of model tuning defaults.
+  keeping the Mac awake while the server runs, confirming before a quit that
+  would stop an active server, a preview of the command that runs on Apply, and
+  a restore of model tuning defaults.
 - **Model**: the `ds4-server` executable and main GGUF model, detected model
   details, and vision encoder settings for models that support them.
 - **Server**: the HTTP host and port, browser client access, the default
@@ -196,6 +198,12 @@ schedule, and closing the lid or sleeping from the Apple menu still sleeps
 the Mac. The same switch is in the menu bar, where the check mark is the
 preference and the subtitle below it reports whether the assertion is
 currently held.
+
+Quitting asks for confirmation while `ds4-server` is starting, running, or
+restarting, because quitting stops it and interrupts connected clients. The
+prompt appears for quits made in the app and from the Dock; scripted quits and
+a logout or restart proceed without a dialog. Turn it off in **General** if
+you would rather quit immediately.
 
 The Model tab for a detected Qwen3.8 Flash Next model:
 
@@ -238,7 +246,8 @@ Source builds use an ad hoc signature and are intended for local development.
 ## Uninstall
 
 Disable **Launch at login** in Settings and quit DS Menu Bar first, then
-remove the app.
+remove the app. Homebrew no longer quits it for you, and an uninstalled app
+that is still running keeps its server alive.
 
 For a Homebrew installation:
 

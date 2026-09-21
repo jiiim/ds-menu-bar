@@ -57,6 +57,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private let server: ServerManager
     private let openSettings: () -> Void
     private let openAbout: () -> Void
+    private let requestQuit: () -> Void
     private let statusItem: NSStatusItem
     private var cancellables = Set<AnyCancellable>()
     private var blinkTimer: AnyCancellable?
@@ -91,11 +92,13 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     init(
         server: ServerManager,
         openSettings: @escaping () -> Void,
-        openAbout: @escaping () -> Void
+        openAbout: @escaping () -> Void,
+        requestQuit: @escaping () -> Void
     ) {
         self.server = server
         self.openSettings = openSettings
         self.openAbout = openAbout
+        self.requestQuit = requestQuit
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         super.init()
 
@@ -316,8 +319,9 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     }
 
     @objc private func quit() {
-        server.stop()
-        NSApp.terminate(nil)
+        // The delegate decides: it prompts while the server is active, and
+        // falls through to the same stop-and-terminate otherwise.
+        requestQuit()
     }
 }
 

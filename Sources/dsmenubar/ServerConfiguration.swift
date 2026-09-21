@@ -17,12 +17,22 @@ final class ServerConfiguration {
     private let defaults: UserDefaults
     private(set) var showsPerformanceInMenuBar: Bool
     private(set) var keepsAwakeWhileRunning: Bool
+    private(set) var confirmQuitWhileServerActive: Bool
     private let log = OSLog(subsystem: "com.jiiim.ds-menu-bar", category: "config")
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         showsPerformanceInMenuBar = defaults.bool(forKey: Self.performanceDisplayKey)
         keepsAwakeWhileRunning = defaults.bool(forKey: Self.keepAwakeKey)
+        // Default-on, read rather than registered: `register(defaults:)` writes
+        // a process-wide registration domain, so it would change the missing-key
+        // answer for every other UserDefaults instance, suites included.
+        // Deleting the key still restores the default.
+        if defaults.object(forKey: Self.confirmQuitKey) == nil {
+            confirmQuitWhileServerActive = true
+        } else {
+            confirmQuitWhileServerActive = defaults.bool(forKey: Self.confirmQuitKey)
+        }
         loadConfig()
     }
 
@@ -147,6 +157,7 @@ final class ServerConfiguration {
     private static let configKey = "dsmenubar.config"
     private static let performanceDisplayKey = "dsmenubar.showPerformanceInMenuBar"
     private static let keepAwakeKey = "dsmenubar.keepAwakeWhileServerRuns"
+    private static let confirmQuitKey = "dsmenubar.confirmQuitWhileServerActive"
 
     var needsInitialSetup: Bool {
         guard defaults.object(forKey: Self.configKey) != nil else { return true }
@@ -229,6 +240,14 @@ final class ServerConfiguration {
     func setKeepsAwakeWhileRunning(_ requested: Bool) {
         keepsAwakeWhileRunning = requested
         defaults.set(requested, forKey: Self.keepAwakeKey)
+    }
+
+    /// Persist the quit-confirmation preference immediately. Like the two
+    /// preferences above, it is an app behavior and must not enter the Apply &
+    /// Restart path — and `Restore All Tuning Defaults` must not reset it.
+    func setConfirmQuitWhileServerActive(_ requested: Bool) {
+        confirmQuitWhileServerActive = requested
+        defaults.set(requested, forKey: Self.confirmQuitKey)
     }
 
     /// Persist the current configuration and apply launch-at-login. Login-item

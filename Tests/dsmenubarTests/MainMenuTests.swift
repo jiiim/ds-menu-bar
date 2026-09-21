@@ -58,7 +58,7 @@ final class MainMenuTests: XCTestCase {
         )
         XCTAssertEqual(
             try item(in: menu, "Quit DS Menu Bar").action,
-            #selector(NSApplication.terminate(_:))
+            #selector(AppDelegate.requestQuit(_:))
         )
     }
 
@@ -104,6 +104,9 @@ final class MainMenuTests: XCTestCase {
         )
         XCTAssertTrue(
             AppDelegate.instancesRespond(to: #selector(AppDelegate.showSettingsWindow(_:)))
+        )
+        XCTAssertTrue(
+            AppDelegate.instancesRespond(to: #selector(AppDelegate.requestQuit(_:)))
         )
     }
 

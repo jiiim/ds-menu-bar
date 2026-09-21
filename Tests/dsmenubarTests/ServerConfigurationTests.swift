@@ -50,6 +50,70 @@ final class ServerConfigurationTests: XCTestCase {
         XCTAssertTrue(ServerConfiguration(defaults: defaults).keepsAwakeWhileRunning)
     }
 
+    func testQuitConfirmationPreferenceDefaultsOn() throws {
+        let suiteName = "dsmenubar-tests-\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Unable to create isolated defaults")
+            return
+        }
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertTrue(ServerConfiguration(defaults: defaults).confirmQuitWhileServerActive)
+    }
+
+    func testQuitConfirmationPreferencePersistsOutsideServerConfig() throws {
+        let suiteName = "dsmenubar-tests-\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Unable to create isolated defaults")
+            return
+        }
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let configuration = ServerConfiguration(defaults: defaults)
+        let serverConfig = configuration.snapshot()
+        XCTAssertTrue(configuration.confirmQuitWhileServerActive)
+
+        configuration.setConfirmQuitWhileServerActive(false)
+
+        XCTAssertFalse(configuration.confirmQuitWhileServerActive)
+        XCTAssertEqual(configuration.snapshot(), serverConfig)
+        XCTAssertFalse(ServerConfiguration(defaults: defaults).confirmQuitWhileServerActive)
+    }
+
+    func testQuitConfirmationDefaultsOnForASuiteWithOnlyUnrelatedKeys() throws {
+        let suiteName = "dsmenubar-tests-\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Unable to create isolated defaults")
+            return
+        }
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        // A suite written by an earlier build holds other app preferences but
+        // predates this key; the registration domain must still supply true.
+        defaults.set(true, forKey: "dsmenubar.keepAwakeWhileServerRuns")
+
+        XCTAssertTrue(ServerConfiguration(defaults: defaults).confirmQuitWhileServerActive)
+    }
+
+    func testQuitConfirmationDefaultDoesNotPolluteTheRegistrationDomain() throws {
+        let suiteName = "dsmenubar-tests-\(UUID().uuidString)"
+        let otherSuiteName = "dsmenubar-tests-\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName),
+              let other = UserDefaults(suiteName: otherSuiteName) else {
+            XCTFail("Unable to create isolated defaults")
+            return
+        }
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+            other.removePersistentDomain(forName: otherSuiteName)
+        }
+
+        // Default-on must be read from this suite, not registered: a
+        // registration is process-wide and would leak into `other`.
+        XCTAssertTrue(ServerConfiguration(defaults: defaults).confirmQuitWhileServerActive)
+        XCTAssertNil(other.object(forKey: "dsmenubar.confirmQuitWhileServerActive"))
+    }
+
     func testInitialSetupIsPromptedOnlyBeforeItIsCompleted() throws {
         let suiteName = "dsmenubar-tests-\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else {
