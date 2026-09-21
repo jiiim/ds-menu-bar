@@ -90,6 +90,11 @@ fi
 # in the log; `syspolicy_check` below is what decides.
 spctl --assess --type execute --verbose=4 "$app_path" || true
 
+command -v syspolicy_check >/dev/null 2>&1 || {
+    echo "syspolicy_check is required and was not found (needs a recent macOS)" >&2
+    exit 1
+}
+
 # Apple's own pre-distribution check. This is the one that catches a missing
 # notarization ticket, which is invisible to codesign and to spctl.
 if ! syspolicy_result=$(syspolicy_check distribution "$app_path" 2>&1); then
@@ -110,7 +115,7 @@ fi
 # then has to resolve one online at launch, which macOS 26 treats as fatal.
 if ! xcrun stapler validate "$app_path"; then
     echo "no notarization ticket is stapled to the app itself: $app_path" >&2
-    echo "staple the app before building the image; see release-process.md" >&2
+    echo "notarize and staple the app before building the image" >&2
     exit 1
 fi
 
