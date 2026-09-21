@@ -26,10 +26,16 @@ fi
 work_dir=$(mktemp -d -t ds-menu-bar-verify.XXXXXX)
 mount_dir="$work_dir/mount"
 device=
+staged_dir=
 
+# One trap. A second `trap ... EXIT` replaces this rather than adding to it,
+# which previously left the image attached and the staged copy on disk.
 cleanup() {
     if [[ -n "$device" ]]; then
         hdiutil detach -quiet "$device" || true
+    fi
+    if [[ -n "$staged_dir" ]]; then
+        rm -rf -- "$staged_dir"
     fi
     rm -rf -- "$work_dir"
 }
@@ -113,7 +119,6 @@ fi
 # above all passed for v0.0.6 in its in-image state; this is the one that
 # reproduces what broke.
 staged_dir=$(mktemp -d "${TMPDIR:-/tmp}/verify-dmg-staged.XXXXXX")
-trap 'rm -rf "$staged_dir"' EXIT
 ditto "$app_path" "$staged_dir/$app_name"
 xattr -w com.apple.quarantine \
     "0081;$(printf %x "$(date +%s)");Safari;$(uuidgen)" \
