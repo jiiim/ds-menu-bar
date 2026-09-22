@@ -322,14 +322,67 @@ final class ServerCommandTests: XCTestCase {
             configuration: config,
             modelProfile: .from(architecture: "glm5-next")
         ).isEmpty)
+    }
 
-        let nonQwenPreview = DS4ServerCommand.preview(
-            configuration: config,
-            modelProfile: .from(architecture: "glm5-next")
+    func testNonQwenModelsInheritManagedVariablesUntouched() {
+        let model = DS4ModelProfile.from(architecture: "glm5-next")
+        let config = ServerConfiguration.Config()
+        let inherited = Dictionary(uniqueKeysWithValues: DS4ServerCommand.managedQwenEnvironmentKeys.map {
+            ($0, "inherited")
+        })
+
+        XCTAssertTrue(DS4ServerCommand.managedEnvironmentKeys(for: model).isEmpty)
+        XCTAssertEqual(
+            DS4ServerCommand.launchEnvironment(
+                configuration: config,
+                modelProfile: model,
+                inheriting: inherited
+            ),
+            inherited
         )
-        XCTAssertTrue(nonQwenPreview.hasPrefix("/usr/bin/env "))
+
+        let preview = DS4ServerCommand.preview(configuration: config, modelProfile: model)
+        XCTAssertTrue(preview.hasPrefix("/usr/bin/env "))
         for key in DS4ServerCommand.managedQwenEnvironmentKeys {
-            XCTAssertTrue(nonQwenPreview.contains("-u " + key), key)
+            XCTAssertFalse(preview.contains(key), key)
+        }
+    }
+
+    func testUnrecognizedProfilesScrubEveryManagedVariable() {
+        let profiles: [DS4ModelProfile] = [
+            .unknown,
+            DS4ModelProfile(family: .supportModel, architecture: "deepseek4_mtp_support")
+        ]
+        let config = ServerConfiguration.Config()
+        let inherited = Dictionary(uniqueKeysWithValues: DS4ServerCommand.managedQwenEnvironmentKeys.map {
+            ($0, "inherited")
+        }).merging(["PATH": "/bin"]) { current, _ in current }
+
+        for model in profiles {
+            XCTAssertEqual(
+                DS4ServerCommand.managedEnvironmentKeys(for: model),
+                DS4ServerCommand.managedQwenEnvironmentKeys,
+                model.architecture ?? "unknown"
+            )
+
+            let environment = DS4ServerCommand.launchEnvironment(
+                configuration: config,
+                modelProfile: model,
+                inheriting: inherited
+            )
+            XCTAssertEqual(environment["PATH"], "/bin")
+            for key in DS4ServerCommand.managedQwenEnvironmentKeys {
+                XCTAssertNil(environment[key], key)
+            }
+
+            let preview = DS4ServerCommand.preview(configuration: config, modelProfile: model)
+            let expectedUnsets = DS4ServerCommand.managedQwenEnvironmentKeys
+                .map { "-u " + $0 }
+                .joined(separator: " ")
+            XCTAssertTrue(
+                preview.hasPrefix("/usr/bin/env " + expectedUnsets + " "),
+                model.architecture ?? "unknown"
+            )
         }
     }
 

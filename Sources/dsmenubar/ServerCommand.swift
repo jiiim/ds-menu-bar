@@ -14,6 +14,25 @@ enum DS4ServerCommand {
         "DS4_QWEN4_IMAGE_MAX_TOKENS"
     ]
 
+    /// The managed variables to scrub from the child environment for the given
+    /// model family.
+    ///
+    /// Checked against antirez/ds4 main `0aaea5a` and ivanfioravanti/ds4-metal
+    /// `ccea7688`: every `DS4_QWEN4_*` read sits on a Qwen3.8-only path (model
+    /// validation, Qwen vision encoding, and the Qwen MTP cycle), so known
+    /// non-Qwen families inherit them untouched. Unrecognized and support
+    /// profiles scrub every managed variable the app knows: it cannot rule out
+    /// that a ds4-server it does not match still reads them, and a stale
+    /// export must not steer a model the app could not classify.
+    static func managedEnvironmentKeys(for modelProfile: DS4ModelProfile) -> [String] {
+        switch modelProfile.family {
+        case .qwen38, .unknown, .supportModel:
+            return managedQwenEnvironmentKeys
+        case .deepSeek, .deepSeek41, .glm52, .glm53Full, .glm53Flash, .glm5Full:
+            return []
+        }
+    }
+
     static func environmentOverrides(
         configuration: ServerConfiguration.Config,
         modelProfile: DS4ModelProfile = .unknown
@@ -38,7 +57,7 @@ enum DS4ServerCommand {
         inheriting base: [String: String] = ProcessInfo.processInfo.environment
     ) -> [String: String] {
         var environment = base
-        for key in managedQwenEnvironmentKeys {
+        for key in managedEnvironmentKeys(for: modelProfile) {
             environment.removeValue(forKey: key)
         }
         environment.merge(environmentOverrides(
@@ -197,15 +216,16 @@ enum DS4ServerCommand {
             configuration: configuration,
             modelProfile: modelProfile
         )
-        let assignments = managedQwenEnvironmentKeys.compactMap { key -> String? in
+        let managedKeys = managedEnvironmentKeys(for: modelProfile)
+        let assignments = managedKeys.compactMap { key -> String? in
             guard let value = environment[key] else { return nil }
             return "\(key)=\(shellQuote(value))"
         }
         // Keep the shell preview's environment aligned with Process.environment:
-        // managed Qwen variables are removed even when the selected model is not
-        // Qwen, and only Qwen models receive configured assignments.
+        // managed variables are removed for the families ds4-server reads them
+        // for, and only active features receive configured assignments.
         var environmentPrefix = ["/usr/bin/env"]
-        for key in managedQwenEnvironmentKeys where environment[key] == nil {
+        for key in managedKeys where environment[key] == nil {
             environmentPrefix += ["-u", key]
         }
         environmentPrefix += assignments
