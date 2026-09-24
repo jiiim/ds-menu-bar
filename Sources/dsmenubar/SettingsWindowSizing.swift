@@ -30,6 +30,9 @@ final class SettingsWindowFitter {
             pendingContentHeight = contentHeight
             return
         }
+        // SwiftUI can rebuild the toolbar items on an update, dropping
+        // their widths; this is a no-op while they hold.
+        equalizePaneTabs()
         guard !isResizing, let visibleHeight = visiblePaneHeight(in: window) else { return }
         apply(targetHeight: window.frame.height - visibleHeight + contentHeight, to: window)
     }
@@ -40,6 +43,29 @@ final class SettingsWindowFitter {
         if let contentHeight = pendingContentHeight {
             pendingContentHeight = nil
             fit(contentHeight: contentHeight)
+        }
+        // SwiftUI installs the pane toolbar after the content joins the window.
+        DispatchQueue.main.async { [weak self] in
+            self?.equalizePaneTabs()
+        }
+    }
+
+    /// Give every pane tab the width of the widest, as a row of equal buttons
+    /// rather than a row sized by label length. `minSize` is deprecated, but
+    /// it is the one width control the Settings toolbar's items still honour.
+    /// Measured on macOS 26: an item is its label's width in the small system
+    /// font, rounded up, plus 11, and a `minSize` width of W makes it W + 4,
+    /// so the widest label plus 7 matches the widest tab exactly.
+    private func equalizePaneTabs() {
+        guard let items = window?.toolbar?.items, !items.isEmpty else { return }
+        let font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+        let widestLabel = items.map {
+            ceil(NSAttributedString(string: $0.label, attributes: [.font: font]).size().width)
+        }.max() ?? 0
+        let width = widestLabel + 7
+        for case let item as any MinimumSizedToolbarItem in items
+        where item.minSize.width != width {
+            item.minSize = NSSize(width: width, height: item.minSize.height)
         }
     }
 
@@ -78,6 +104,15 @@ final class SettingsWindowFitter {
         isResizing = false
     }
 }
+
+/// Reaches `NSToolbarItem.minSize` without a deprecation warning at the use
+/// site; see `SettingsWindowFitter.equalizePaneTabs()`.
+@MainActor
+private protocol MinimumSizedToolbarItem: AnyObject {
+    var minSize: NSSize { get set }
+}
+
+extension NSToolbarItem: MinimumSizedToolbarItem {}
 
 /// Measures a Form row that is hidden, from a hidden copy of its content and
 /// the padding the Form puts around the row above it. The padding is the
