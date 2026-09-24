@@ -42,6 +42,7 @@ enum MainMenu {
         let main = NSMenu()
         main.addItem(submenu(applicationMenu(services: services)))
         main.addItem(submenu(editMenu()))
+        main.addItem(submenu(serverMenu()))
         main.addItem(submenu(windowMenu(windows)))
         return Menus(main: main, services: services, windows: windows)
     }
@@ -105,6 +106,17 @@ enum MainMenu {
         menu.addItem(item("Close", #selector(NSWindow.performClose(_:)), key: "w"))
         menu.addItem(.separator())
         menu.addItem(item("Bring All to Front", #selector(NSApplication.arrangeInFront(_:))))
+        return menu
+    }
+
+    /// Server lifecycle commands, reachable from the menu bar while any of
+    /// the app's windows is frontmost. The status item's menu offers the
+    /// same operations.
+    private static func serverMenu() -> NSMenu {
+        let menu = NSMenu(title: "Server")
+        menu.addItem(item("Start Server", #selector(AppDelegate.startServer(_:))))
+        menu.addItem(item("Stop Server", #selector(AppDelegate.stopServer(_:))))
+        menu.addItem(item("Restart Server", #selector(AppDelegate.restartServer(_:))))
         return menu
     }
 

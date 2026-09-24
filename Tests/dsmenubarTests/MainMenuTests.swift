@@ -17,7 +17,7 @@ final class MainMenuTests: XCTestCase {
 
         XCTAssertEqual(
             menus.main.items.map(\.title),
-            ["DS Menu Bar", "Edit", "Window"]
+            ["DS Menu Bar", "Edit", "Server", "Window"]
         )
         XCTAssertTrue(menus.main.items.allSatisfy { $0.submenu != nil })
         XCTAssertTrue(menus.main.items.last?.submenu === menus.windows)
@@ -96,6 +96,29 @@ final class MainMenuTests: XCTestCase {
         }
     }
 
+    /// The Settings window dropped its start/stop button, so the lifecycle
+    /// commands live here and in the status-item menu.
+    func testServerMenuCarriesLifecycleCommands() throws {
+        let menu = try submenu(named: "Server")
+
+        XCTAssertEqual(
+            menu.items.filter { !$0.isSeparatorItem }.map(\.title),
+            ["Start Server", "Stop Server", "Restart Server"]
+        )
+        XCTAssertEqual(
+            try item(in: menu, "Start Server").action,
+            #selector(AppDelegate.startServer(_:))
+        )
+        XCTAssertEqual(
+            try item(in: menu, "Stop Server").action,
+            #selector(AppDelegate.stopServer(_:))
+        )
+        XCTAssertEqual(
+            try item(in: menu, "Restart Server").action,
+            #selector(AppDelegate.restartServer(_:))
+        )
+    }
+
     /// NSApp forwards unhandled application actions to its delegate, which
     /// only works while these stay exposed to the Objective-C runtime.
     func testTheAppDelegateRespondsToTheMenuActions() {
@@ -107,6 +130,15 @@ final class MainMenuTests: XCTestCase {
         )
         XCTAssertTrue(
             AppDelegate.instancesRespond(to: #selector(AppDelegate.requestQuit(_:)))
+        )
+        XCTAssertTrue(
+            AppDelegate.instancesRespond(to: #selector(AppDelegate.startServer(_:)))
+        )
+        XCTAssertTrue(
+            AppDelegate.instancesRespond(to: #selector(AppDelegate.stopServer(_:)))
+        )
+        XCTAssertTrue(
+            AppDelegate.instancesRespond(to: #selector(AppDelegate.restartServer(_:)))
         )
     }
 

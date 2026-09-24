@@ -47,6 +47,30 @@ extension ServerStatus {
         case .running, .stopping: return "Stop Server"
         }
     }
+
+    /// Whether the matching Server menu command applies in this state.
+    var canStart: Bool {
+        switch self {
+        case .stopped, .error: return true
+        case .starting, .running, .restarting, .stopping: return false
+        }
+    }
+
+    /// Start and restart are cancellable through `stop()`, so they count as
+    /// stoppable; a shutdown already under way does not.
+    var canStop: Bool {
+        switch self {
+        case .starting, .running, .restarting: return true
+        case .stopped, .stopping, .error: return false
+        }
+    }
+
+    /// Restart is offered only for a live server. From any other state it
+    /// would be a start, which the Start item already covers.
+    var canRestart: Bool {
+        if case .running = self { return true }
+        return false
+    }
 }
 
 // MARK: - Menu-bar item
@@ -293,6 +317,8 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         statusTextItem.title = "Status: \(server.status.menuText)"
         updateLastActivityItem()
         serverActionItem.title = server.status.actionTitle
+        // A shutdown already under way has nothing left to toggle.
+        serverActionItem.isEnabled = server.status.canStart || server.status.canStop
         speedItem.state = server.showsPerformanceInMenuBar ? .on : .off
         // The check mark is the preference. The subtitle is what it is doing
         // now, which differs whenever the Mac is on battery or nothing is
@@ -310,13 +336,13 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         )
     }
 
+    /// Uses the same state rules as the Server menu's Start and Stop.
     @objc private func toggleServer() {
-        switch server.status {
-        case .running, .starting, .restarting, .stopping:
-            server.stop()
-        case .stopped, .error:
+        if server.status.canStart {
             NSApp.activate()
             server.start()
+        } else if server.status.canStop {
+            server.stop()
         }
     }
 

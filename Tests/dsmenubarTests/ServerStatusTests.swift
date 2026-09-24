@@ -7,9 +7,10 @@ import XCTest
 
 /// Tests for `ServerStatus` and its display-string extensions (`isStartingUp`
 /// in ServerManager.swift; `isTransitional`, `steadyGlyph`, `menuText`,
-/// `actionTitle` in MenuBarContent.swift). These drive what the menubar icon
-/// and menu show for each lifecycle state, so a wrong case in any of the
-/// switches would show the wrong thing to the user with no compiler error.
+/// `actionTitle`, `canStart`, `canStop`, `canRestart` in MenuBarContent.swift).
+/// These drive what the menubar icon, menu, and Server menu show for each
+/// lifecycle state, so a wrong case in any of the switches would show the
+/// wrong thing to the user with no compiler error.
 final class ServerStatusTests: XCTestCase {
 
     // MARK: - isStartingUp
@@ -65,6 +66,31 @@ final class ServerStatusTests: XCTestCase {
         XCTAssertEqual(ServerStatus.restarting.actionTitle, "Cancel Restart")
         XCTAssertEqual(ServerStatus.running(pid: 1).actionTitle, "Stop Server")
         XCTAssertEqual(ServerStatus.stopping.actionTitle, "Stop Server")
+    }
+
+    // MARK: - Server menu enablement
+
+    func testServerMenuEnablement() {
+        XCTAssertTrue(ServerStatus.stopped.canStart)
+        XCTAssertTrue(ServerStatus.error("x").canStart)
+        XCTAssertFalse(ServerStatus.starting.canStart)
+        XCTAssertFalse(ServerStatus.running(pid: 1).canStart)
+        XCTAssertFalse(ServerStatus.stopping.canStart)
+        XCTAssertFalse(ServerStatus.restarting.canStart)
+
+        XCTAssertTrue(ServerStatus.starting.canStop)
+        XCTAssertTrue(ServerStatus.running(pid: 1).canStop)
+        XCTAssertTrue(ServerStatus.restarting.canStop)
+        XCTAssertFalse(ServerStatus.stopped.canStop)
+        XCTAssertFalse(ServerStatus.stopping.canStop)
+        XCTAssertFalse(ServerStatus.error("x").canStop)
+
+        XCTAssertTrue(ServerStatus.running(pid: 1).canRestart)
+        XCTAssertFalse(ServerStatus.starting.canRestart)
+        XCTAssertFalse(ServerStatus.restarting.canRestart)
+        XCTAssertFalse(ServerStatus.stopping.canRestart)
+        XCTAssertFalse(ServerStatus.stopped.canRestart)
+        XCTAssertFalse(ServerStatus.error("x").canRestart)
     }
 
     // MARK: - holdsServerProcess

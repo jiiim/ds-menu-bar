@@ -163,10 +163,12 @@ you. DS Menu Bar stores their paths in its configuration and uses them when
 constructing the server command.
 
 After setup, use the star icon in the menu bar to start or stop the server,
-open its log, or open Settings. Applying settings while the server is running
-restarts it with the updated configuration. The menu also shows the server's
-status and when it last served a request — `unused` until it has served one,
-a relative time after that, and a dash while it is not running.
+open its log, or open Settings. While one of the app's windows is frontmost,
+the same lifecycle commands are in the Server menu of the menu bar. Applying
+settings while the server is running restarts it with the updated
+configuration. The status menu also shows the server's status and when it
+last served a request — `unused` until it has served one, a relative time
+after that, and a dash while it is not running.
 
 ## Settings
 

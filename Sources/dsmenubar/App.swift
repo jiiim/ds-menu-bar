@@ -19,7 +19,7 @@ private struct AppSettingsScene: Scene {
 @main
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
-    @preconcurrency UNUserNotificationCenterDelegate {
+    NSMenuItemValidation, @preconcurrency UNUserNotificationCenterDelegate {
     /// macOS 26's scene representation API keeps the SwiftUI Settings scene
     /// available to this AppKit lifecycle.
     private lazy var settingsScene: NSHostingSceneRepresentation<AppSettingsScene> =
@@ -248,6 +248,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
     @objc func showSettingsWindow(_ sender: Any?) {
         openSettings(destination: .general)
+    }
+
+    // MARK: - Server commands
+
+    @objc func startServer(_ sender: Any?) {
+        server.start()
+    }
+
+    @objc func stopServer(_ sender: Any?) {
+        server.stop()
+    }
+
+    @objc func restartServer(_ sender: Any?) {
+        server.restart()
+    }
+
+    /// MainMenu dispatches to nil, so the app delegate is the responder that
+    /// handles the Server menu, and this is what AppKit asks for its item
+    /// states. Restart is offered only for a live server; from any other state
+    /// it would be a start.
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(startServer(_:)) {
+            return server.status.canStart
+        }
+        if menuItem.action == #selector(stopServer(_:)) {
+            return server.status.canStop
+        }
+        if menuItem.action == #selector(restartServer(_:)) {
+            return server.status.canRestart
+        }
+        return true
     }
 
     private func openAbout() {
