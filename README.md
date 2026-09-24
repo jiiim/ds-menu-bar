@@ -73,7 +73,7 @@ instructions and model-format information. DS Menu Bar does not include
 ### ds4-server version compatibility
 
 > [!IMPORTANT]
-> At the time of the DS Menu Bar v0.0.9 release, `ds4` does not publish
+> At the time of the DS Menu Bar v0.0.10 release, DwarfStar does not publish
 > versioned releases. Compatibility is therefore tracked against specific
 > commits on its `main` branch, and DS Menu Bar is updated as upstream changes
 > are reviewed. The latest known compatible commit is
@@ -223,10 +223,10 @@ Starting the server by hand clears that, as does a later failure after a
 longer healthy run. The same **General** toggle turns this off, and the report
 says so when it is off.
 
-The Model tab for a detected Qwen3.8 Flash Next model:
+The Model pane for a detected Qwen3.8 Flash Next model:
 
 <p align="center">
-  <img src="docs/images/model-settings.png" width="942" alt="Model settings showing detected Qwen3.8 Flash Next details">
+  <img src="docs/images/model-settings.png" width="671" alt="Model settings showing detected Qwen3.8 Flash Next details">
 </p>
 
 ## Logs and request traces
