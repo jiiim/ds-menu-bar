@@ -188,27 +188,50 @@ extension SettingsView {
                     errorKey: .defaultTokens,
                     note: "0 uses ds4-server's default."
                 )
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .scrollView) } action: {
+                    quantumRowReserve.defaultTokensFrame = $0
+                }
                 integerRow(
                     "Resident sessions",
                     value: $draft.batchedSessions,
                     errorKey: .batchedSessions,
                     note: "0 disables session batching. Each session keeps its own caches, so more sessions multiply context memory; supported models share one prefill workspace."
                 )
+                .onGeometryChange(for: CGFloat.self) { $0.frame(in: .scrollView).minY } action: {
+                    quantumRowReserve.residentSessionsTop = $0
+                }
+                // The window keeps room for this row while it is hidden, so
+                // typing a session count shows it without a resize. The copy
+                // measures that room at the row's real width.
+                .background(alignment: .top) {
+                    mixedPrefillQuantumRow
+                        .fixedSize(horizontal: false, vertical: true)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
+                            quantumRowReserve.contentHeight = $0
+                        }
+                        .hidden()
+                        .disabled(true)
+                        .accessibilityHidden(true)
+                }
                 if draft.batchedSessions > 0 {
-                    integerRow(
-                        "Mixed prefill quantum",
-                        value: $draft.mixedPrefillQuantum,
-                        errorKey: .mixedPrefillQuantum,
-                        note: "The amount of prompt work allowed between active generations."
-                    )
-                    if mayExceedBatchedMTPDecodeWidth {
-                        Text("ds4-server speculates across at most \(ServerConfiguration.Config.maxBatchedEmbeddedMTPDecodeWidth) sessions decoding at once. MTP still applies beyond that, one session at a time.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
+                    mixedPrefillQuantumRow
+                }
+                if canBatchEmbeddedMTP {
+                    Text("With batching, ds4-server speculates across at most \(ServerConfiguration.Config.maxBatchedEmbeddedMTPDecodeWidth) sessions decoding at once. MTP still applies beyond that, one session at a time.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
             }
         }
+    }
+
+    var mixedPrefillQuantumRow: some View {
+        integerRow(
+            "Mixed prefill quantum",
+            value: $draft.mixedPrefillQuantum,
+            errorKey: .mixedPrefillQuantum,
+            note: "The amount of prompt work allowed between active generations."
+        )
     }
 
     var performancePane: some View {
@@ -496,12 +519,11 @@ extension SettingsView {
         draft.hasBatchedSessionMTPConflict(modelProfile: modelProfile)
     }
 
-    /// Enough resident slots that a decode cycle can outgrow the batched
-    /// speculative path. Whether it actually does depends on how many sessions
-    /// are live at once, so the note describes the cap rather than predicting it.
-    var mayExceedBatchedMTPDecodeWidth: Bool {
-        draft.usesBatchedEmbeddedMTP(modelProfile: modelProfile) &&
-            draft.batchedSessions > ServerConfiguration.Config.maxBatchedEmbeddedMTPDecodeWidth
+    /// Embedded MTP on a model that can batch it, so the decode-width cap can
+    /// apply. The note hangs on this rather than on the typed session count,
+    /// so typing does not change the pane's height.
+    var canBatchEmbeddedMTP: Bool {
+        draft.mtpMode == .embedded && modelProfile.supportsBatchedEmbeddedMTP
     }
 
     @ViewBuilder

@@ -172,8 +172,11 @@ after that, and a dash while it is not running.
 
 ## Settings
 
-Settings is organized into seven tabs. Available controls and defaults adapt
-to the selected model and the Mac's unified memory.
+Settings is organized into seven panes. Available controls and defaults adapt
+to the selected model and the Mac's unified memory. Edits are staged: a Revert
+and Apply bar sits pinned along the bottom of the window, enabled once the
+draft differs from the running configuration, and the window's height fits the
+current pane, up to the height of the screen. Return applies and Esc reverts.
 
 - **General**: launch at login, the optional menu-bar throughput display,
   keeping the Mac awake while the server runs, confirming before a quit that

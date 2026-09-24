@@ -13,6 +13,9 @@ private struct AppSettingsScene: Scene {
         Settings {
             SettingsView(server: server)
         }
+        // The window's width is the view's fixed width; its height is set by
+        // SettingsWindowFitter.
+        .windowResizability(.contentSize)
     }
 }
 

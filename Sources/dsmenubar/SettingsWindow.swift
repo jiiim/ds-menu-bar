@@ -8,9 +8,9 @@ import UniformTypeIdentifiers
 
 // MARK: - Settings view
 
-/// Hosted by the app's `Settings` scene. The pane controls use native macOS
-/// buttons while the active server configuration remains unchanged until the
-/// user applies a valid draft.
+/// Hosted by the app's `Settings` scene. The window toolbar switches panes,
+/// and a staged draft stays unapplied until the bottom bar's Apply — closing
+/// or reverting restores the active configuration.
 struct SettingsView: View {
     @ObservedObject var server: ServerManager
     @State var draft: ServerConfiguration.Config
@@ -42,7 +42,10 @@ struct SettingsView: View {
     @State var deleteTraceDisabled = false
     @State var logDeletionError = ""
     @State var traceDeletionError = ""
-    @State var layoutRevision = 0
+    @State var windowFitter = SettingsWindowFitter()
+    /// Each pane's last measured content height; see `fitted(_:)`.
+    @State var paneContentHeight: [SettingsPane: CGFloat] = [:]
+    @State var quantumRowReserve = SettingsReservedRow()
     @State var isSettingsVisible = false
     @SceneStorage("dsmenubar.settingsPane") var selectedPaneRaw = SettingsPane.general.rawValue
 
@@ -154,31 +157,9 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            paneNavigation
-            Divider()
-            activePaneContent
-        }
+        activePaneContent
         .formStyle(.grouped)
         .navigationTitle(activePane.title)
-        .frame(minWidth: 640, minHeight: 520)
-        .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-                Button("Revert") {
-                    restoreActiveDraft(refreshDerived: true)
-                }
-                .disabled(!hasChanges)
-                .keyboardShortcut(.cancelAction)
-            }
-            ToolbarItem(placement: .primaryAction) {
-                Button(server.status.actionTitle, action: performServerAction)
-            }
-            ToolbarItem(placement: .confirmationAction) {
-                Button(applyTitle, action: applySettings)
-                    .disabled(!canApply)
-                    .keyboardShortcut(.defaultAction)
-            }
-        }
         .safeAreaInset(edge: .top, spacing: 0) {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 0) {
@@ -228,13 +209,18 @@ struct SettingsView: View {
             .padding(.vertical, 8)
             .background(.thinMaterial)
         }
-        .background(SettingsWindowSizer(revision: layoutRevision))
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            actionBar
+        }
+        // Outside the bars: a width on the panes alone leaves the bars, and
+        // with them the window, free to widen around a centered Form.
+        .frame(width: 640)
+        .background(SettingsWindowSizer(fitter: windowFitter))
         .onChange(of: draft) { _, newValue in
             let inputs = SettingsDerivedInputs(newValue)
             let errors = settingsValidationErrors(for: newValue)
             if errors != validationErrors {
                 validationErrors = errors
-                layoutRevision += 1
             }
             // A refusal names settings to fix and an Apply to press. Once
             // nothing is highlighted, or the draft matches what is already
@@ -246,6 +232,22 @@ struct SettingsView: View {
             }
             isRefreshingDerivedState = inputs != derivedInputs ||
                 derivedRefreshRevision != completedDerivedRefreshRevision
+        }
+        .onChange(of: selectedPaneRaw) { _, _ in
+            // A pane whose content is unchanged since it was last shown
+            // reports nothing on its return, so fit from what it reported
+            // then. A pane that does report has already run by the next
+            // runloop turn and left its current height here. This fit also
+            // applies to a pane showing a validation message.
+            DispatchQueue.main.async {
+                fitWindow(to: activePane)
+            }
+        }
+        .onChange(of: quantumRowReserve.height) { _, _ in
+            // The room kept for the hidden row was measured after the pane
+            // was fitted without it.
+            guard activePane == .server, !activePaneShowsValidationMessage else { return }
+            fitWindow(to: .server)
         }
         .task(id: SettingsDerivedTaskID(
             inputs: SettingsDerivedInputs(draft),
@@ -522,7 +524,6 @@ struct SettingsView: View {
             vision: derived.vision
         )
         isRefreshingDerivedState = false
-        layoutRevision += 1
     }
 
     func destinationPaneRaw(_ destination: ServerSettingsDestination) -> String {
@@ -533,57 +534,106 @@ struct SettingsView: View {
         }
     }
 
-    var paneNavigation: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                ForEach(SettingsPane.allCases) { pane in
-                    Button {
-                        selectedPaneRaw = pane.rawValue
-                    } label: {
-                        Label(pane.title, systemImage: pane.systemImage)
-                            .lineLimit(1)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .tint(pane == activePane ? .accentColor : .secondary)
-                    .background(
-                        pane == activePane ? Color.accentColor.opacity(0.10) : .clear,
-                        in: RoundedRectangle(cornerRadius: 6)
-                    )
-                    .accessibilityAddTraits(pane == activePane ? [.isSelected] : [])
-                    .accessibilityLabel(pane.title)
-                }
+    /// Staged edits act from here: one prominent Apply with Revert beside it.
+    /// The bar is always present and pinned, so it stays reachable no matter
+    /// how long the pane is or how far it has been scrolled; both buttons are
+    /// disabled until the draft differs from the running configuration.
+    var actionBar: some View {
+        HStack(spacing: 12) {
+            if hasChanges {
+                // Return only reaches Apply while Apply is enabled.
+                Text(canApply ? "Return to apply \u{2022} Esc to revert" : "Esc to revert")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            Spacer(minLength: 0)
+            Button("Revert") {
+                restoreActiveDraft(refreshDerived: true)
+            }
+            .keyboardShortcut(.cancelAction)
+            .disabled(!hasChanges)
+            Button(applyTitle, action: applySettings)
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+                .disabled(!canApply)
         }
-        .defaultScrollAnchor(.center, for: .alignment)
-        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 10)
         .background(.bar)
+        .overlay(alignment: .top) { Divider() }
     }
 
+    /// A `TabView` inside a `Settings` scene is what draws the window's
+    /// noncustomizable pane toolbar, with the icon-over-label items and the
+    /// selected-pane highlight that Finder and Safari settings use.
+    /// Selection goes through `activePane`, so a stored value that names no
+    /// pane selects General in the tabs as well as the title.
     var activePaneContent: some View {
-        ZStack {
-            paneLayer(.general) { generalPane }
-            paneLayer(.model) { modelPane }
-            paneLayer(.server) { serverPane }
-            paneLayer(.performance) { performancePane }
-            paneLayer(.kvCache) { kvCachePane }
-            paneLayer(.mtp) { mtpPane }
-            paneLayer(.diagnostics) { diagnosticsPane }
+        TabView(selection: Binding(
+            get: { activePane },
+            set: { selectedPaneRaw = $0.rawValue }
+        )) {
+            fitted(.general) { generalPane }
+                .tabItem { paneLabel(.general) }
+                .tag(SettingsPane.general)
+            fitted(.model) { modelPane }
+                .tabItem { paneLabel(.model) }
+                .tag(SettingsPane.model)
+            fitted(.server) { serverPane }
+                .tabItem { paneLabel(.server) }
+                .tag(SettingsPane.server)
+            fitted(.performance) { performancePane }
+                .tabItem { paneLabel(.performance) }
+                .tag(SettingsPane.performance)
+            fitted(.kvCache) { kvCachePane }
+                .tabItem { paneLabel(.kvCache) }
+                .tag(SettingsPane.kvCache)
+            fitted(.mtp) { mtpPane }
+                .tabItem { paneLabel(.mtp) }
+                .tag(SettingsPane.mtp)
+            fitted(.diagnostics) { diagnosticsPane }
+                .tabItem { paneLabel(.diagnostics) }
+                .tag(SettingsPane.diagnostics)
         }
     }
 
-    func paneLayer<Content: View>(
+    func paneLabel(_ pane: SettingsPane) -> some View {
+        Label(pane.title, systemImage: pane.systemImage)
+    }
+
+    /// Reports the pane's content height to the window fitter whenever it
+    /// changes. While the pane shows a validation message, the
+    /// window holds its height and the pane scrolls: a typo should not move
+    /// the action bar, and the scroll bar leaves once the field is corrected.
+    func fitted<Pane: View>(
         _ pane: SettingsPane,
-        @ViewBuilder content: () -> Content
+        @ViewBuilder content: () -> Pane
     ) -> some View {
         content()
-            .opacity(activePane == pane ? 1 : 0)
-            .disabled(activePane != pane)
-            .allowsHitTesting(activePane == pane)
-            .accessibilityHidden(activePane != pane)
-            .zIndex(activePane == pane ? 1 : 0)
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                geometry.contentSize.height
+            } action: { _, height in
+                paneContentHeight[pane] = height
+                guard pane == activePane, !activePaneShowsValidationMessage else { return }
+                fitWindow(to: pane)
+            }
+    }
+
+    func fitWindow(to pane: SettingsPane) {
+        guard let height = paneContentHeight[pane] else { return }
+        windowFitter.fit(contentHeight: height + reservedHeight(in: pane))
+    }
+
+    /// Room kept for a row that typing in another field can reveal. The row
+    /// then takes that room instead of resizing the window, and hiding it
+    /// again leaves the room empty.
+    func reservedHeight(in pane: SettingsPane) -> CGFloat {
+        guard pane == .server, draft.batchedSessions == 0 else { return 0 }
+        return quantumRowReserve.height ?? 0
+    }
+
+    var activePaneShowsValidationMessage: Bool {
+        validationErrors.keys.contains { SettingsPane.containing($0) == activePane }
     }
 
 
@@ -884,7 +934,6 @@ struct SettingsView: View {
             validationErrors = errors
             applyValidationID = nil
             isApplyingSettings = false
-            layoutRevision += 1
 
             guard errors.isEmpty else {
                 revealFirstValidationError(in: errors)
@@ -947,7 +996,6 @@ struct SettingsView: View {
                     : "Settings not applied. Re-check the selected files.",
                 isFailure: true
             )
-            layoutRevision += 1
             return
         case .applied, .appliedAndRestarting:
             break
@@ -975,15 +1023,6 @@ struct SettingsView: View {
             isRefreshingDerivedState = false
         } else {
             requestDerivedRefresh()
-        }
-    }
-
-    func performServerAction() {
-        switch server.status {
-        case .stopped, .error:
-            server.start()
-        case .starting, .running, .restarting, .stopping:
-            server.stop()
         }
     }
 
