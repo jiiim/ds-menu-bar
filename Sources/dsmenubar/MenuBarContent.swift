@@ -79,7 +79,7 @@ extension ServerStatus {
 @MainActor
 final class StatusBarController: NSObject, NSMenuDelegate {
     private let server: ServerManager
-    private let openSettings: () -> Void
+    private let openSettings: (ServerSettingsDestination) -> Void
     private let openAbout: () -> Void
     private let requestQuit: () -> Void
     private let statusItem: NSStatusItem
@@ -95,6 +95,8 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private let statusTextItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let lastActivityItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let serverActionItem = NSMenuItem(title: "", action: nil, keyEquivalent: "s")
+    /// Parent of a submenu rebuilt on every refresh; it holds no action itself.
+    private let modelItem = NSMenuItem(title: "Model", action: nil, keyEquivalent: "")
     private let speedItem = NSMenuItem(
         title: "Show Speeds in Menu Bar",
         action: nil,
@@ -117,7 +119,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     init(
         server: ServerManager,
-        openSettings: @escaping () -> Void,
+        openSettings: @escaping (ServerSettingsDestination) -> Void,
         openAbout: @escaping () -> Void,
         requestQuit: @escaping () -> Void
     ) {
@@ -178,6 +180,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         menu.addItem(lastActivityItem)
         menu.addItem(.separator())
         menu.addItem(serverActionItem)
+        menu.addItem(modelItem)
         menu.addItem(item("Open Log in Console", action: #selector(openLog)))
         menu.addItem(speedItem)
         menu.addItem(keepAwakeItem)
@@ -326,6 +329,63 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         // was not would be worse than no item at all.
         keepAwakeItem.state = server.keepsAwakeWhileRunning ? .on : .off
         keepAwakeItem.subtitle = server.keepAwakeState.menuSubtitle
+        updateModelMenu()
+    }
+
+    /// Rebuild the Model submenu from the configured profiles. The parent item
+    /// stays enabled while the server runs so the list can still be read; the
+    /// individual entries are disabled and say why.
+    private func updateModelMenu() {
+        let models = server.configuredModels
+        guard !models.isEmpty else {
+            modelItem.isHidden = true
+            modelItem.submenu = nil
+            return
+        }
+        modelItem.isHidden = false
+
+        let canSwitch = !server.status.holdsServerProcess
+        let submenu = NSMenu()
+        submenu.autoenablesItems = false
+
+        if !canSwitch {
+            let notice = NSMenuItem(
+                title: "Stop the server to switch models",
+                action: nil,
+                keyEquivalent: ""
+            )
+            notice.isEnabled = false
+            submenu.addItem(notice)
+            submenu.addItem(.separator())
+        }
+
+        for model in models {
+            let entry = NSMenuItem(
+                title: model.displayName,
+                action: #selector(selectModel(_:)),
+                keyEquivalent: ""
+            )
+            entry.target = self
+            entry.representedObject = model.id
+            entry.state = model.isActive ? .on : .off
+            entry.isEnabled = model.isAvailable && canSwitch
+            // A stale profile is kept, its file reported missing rather than
+            // the entry vanishing: the path is what the user has to go fix.
+            if !model.isAvailable { entry.subtitle = "File not found" }
+            submenu.addItem(entry)
+        }
+
+        submenu.addItem(.separator())
+        let browseItem = NSMenuItem(
+            title: "Browse for Model…",
+            action: #selector(showModelSettings),
+            keyEquivalent: ""
+        )
+        browseItem.target = self
+        browseItem.isEnabled = true
+        submenu.addItem(browseItem)
+
+        modelItem.submenu = submenu
     }
 
     private func updateLastActivityItem() {
@@ -359,7 +419,16 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     }
 
     @objc private func showSettings() {
-        openSettings()
+        openSettings(.general)
+    }
+
+    @objc private func showModelSettings() {
+        openSettings(.model)
+    }
+
+    @objc private func selectModel(_ sender: NSMenuItem) {
+        guard let path = sender.representedObject as? String else { return }
+        server.switchModel(toPath: path)
     }
 
     @objc private func showAbout() {

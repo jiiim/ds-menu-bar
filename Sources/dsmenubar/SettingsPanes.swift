@@ -765,12 +765,17 @@ extension SettingsView {
             // of a section is nothing at all. On its own line it gets the full
             // width, which these paths need anyway.
             LabeledContent(title) {
-                Button(directory ? "Choose Folder…" : "Choose…") {
-                    choosePath(field: field)
+                HStack(spacing: 8) {
+                    if field == .model {
+                        configuredModelsMenu
+                    }
+                    Button(directory ? "Choose Folder…" : "Choose…") {
+                        choosePath(field: field)
+                    }
+                    .accessibilityLabel(
+                        directory ? "Choose folder for \(title)" : "Choose file for \(title)"
+                    )
                 }
-                .accessibilityLabel(
-                    directory ? "Choose folder for \(title)" : "Choose file for \(title)"
-                )
             }
             // A filled monospaced field, like the command preview in General:
             // plain text on the card reads as more label, and a path has to be
@@ -803,6 +808,40 @@ extension SettingsView {
             if let errorKey, let error = validationErrors[errorKey] {
                 validationLabel(error)
             }
+        }
+    }
+
+    /// Quick access to models the user has already configured, so returning to
+    /// one does not mean walking the file system again. Hidden until there is
+    /// more than one model to choose between.
+    @ViewBuilder
+    var configuredModelsMenu: some View {
+        let models = server.configuredModels
+        if models.count > 1 {
+            let currentKey = ServerConfiguration.Config.modelKey(
+                for: draft.modelPath,
+                serverPath: draft.serverPath
+            )
+            Menu {
+                ForEach(models) { model in
+                    Button {
+                        applyPickedPath(.model, path: model.id)
+                    } label: {
+                        if model.id == currentKey {
+                            Label(model.displayName, systemImage: "checkmark")
+                        } else {
+                            Text(model.displayName)
+                        }
+                    }
+                    .disabled(!model.isAvailable)
+                }
+            } label: {
+                Image(systemName: "clock.arrow.circlepath")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Switch to a previously configured model")
+            .accessibilityLabel("Previously configured models")
         }
     }
 

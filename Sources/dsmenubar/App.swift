@@ -66,8 +66,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         AppActivation.install()
         statusBarController = StatusBarController(
             server: server,
-            openSettings: {
-                SettingsNavigation.open(.general)
+            openSettings: { destination in
+                SettingsNavigation.open(destination)
                 AppActivation.windowOpened()
             },
             openAbout: { [weak self] in self?.openAbout() },

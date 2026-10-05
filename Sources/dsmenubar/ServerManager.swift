@@ -429,6 +429,89 @@ final class ServerManager: ObservableObject {
         config.snapshot()
     }
 
+    // MARK: - Model switching
+
+    /// A model the app can switch to without a file panel: one whose tuning
+    /// profile has been remembered, or the model currently selected.
+    struct ConfiguredModelEntry: Identifiable, Equatable {
+        /// Canonical model key, as stored in `Config.modelProfiles`.
+        let id: String
+        /// Last path component, which is what the user recognises.
+        let displayName: String
+        let isActive: Bool
+        /// The file was readable when this list was built.
+        let isAvailable: Bool
+    }
+
+    /// Every model the user has already configured, ordered by name. The
+    /// selected model is listed even when no profile has been stored for it.
+    var configuredModels: [ConfiguredModelEntry] {
+        let current = config.snapshot()
+        let serverDirectory = DS4ServerCommand.serverDirectory(for: current.serverPath)
+        let activeKey = ServerConfiguration.Config.modelKey(
+            for: current.modelPath,
+            serverPath: current.serverPath
+        )
+
+        var keys = Set(current.modelProfiles.keys)
+        if !activeKey.isEmpty { keys.insert(activeKey) }
+
+        return keys.compactMap { key -> ConfiguredModelEntry? in
+            guard !key.isEmpty else { return nil }
+            let resolved = DS4ServerCommand.resolving(key, relativeTo: serverDirectory)
+            let fileName = (key as NSString).lastPathComponent
+            return ConfiguredModelEntry(
+                id: key,
+                displayName: fileName.isEmpty ? key : fileName,
+                isActive: key == activeKey,
+                isAvailable: FileManager.default.isReadableRegularFile(atPath: resolved)
+            )
+        }
+        .sorted {
+            let order = $0.displayName.localizedStandardCompare($1.displayName)
+            return order == .orderedSame ? $0.id < $1.id : order == .orderedAscending
+        }
+    }
+
+    /// Select another configured model, restoring the tuning, MTP, and vision
+    /// settings remembered for it. Refused while a server process is live,
+    /// because ds4-server reads its model once at startup.
+    ///
+    /// The file is re-inspected before anything is committed, so a missing,
+    /// unreadable, or incompatible GGUF is rejected here rather than at launch.
+    /// Returns whether the configuration was applied.
+    @discardableResult
+    func switchModel(toPath path: String) -> Bool {
+        guard !status.holdsServerProcess else {
+            os_log(
+                .info, log: log,
+                "ignoring model switch while a server process is live"
+            )
+            return false
+        }
+
+        let current = config.snapshot()
+        let serverDirectory = DS4ServerCommand.serverDirectory(for: current.serverPath)
+        let resolved = DS4ServerCommand.resolving(path, relativeTo: serverDirectory)
+        guard FileManager.default.isReadableRegularFile(atPath: resolved) else {
+            os_log(.error, log: log, "model file is not readable: %{public}@", resolved)
+            return false
+        }
+
+        // Store the path the way every other selection does, so a model inside
+        // ds4-server's directory stays relative to it.
+        let stored = DS4ServerCommand.storingResourcePath(path, relativeTo: serverDirectory)
+        let newConfig = current.selectingModel(
+            path: stored,
+            serverPath: current.serverPath,
+            profile: GGUFModelInspector.profile(for: stored, relativeTo: serverDirectory)
+        )
+
+        // applyConfiguration inspects and validates the restored MTP and vision
+        // paths as well, so an incompatible GGUF cannot reach the config.
+        return applyConfiguration(newConfig).kind == .applied
+    }
+
     /// Apply the app's login-item setting without restarting ds4-server.
     func setLaunchAtLogin(_ requested: Bool) -> ServerConfiguration.LoginItemUpdate {
         objectWillChange.send()
