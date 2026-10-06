@@ -163,12 +163,13 @@ you. DS Menu Bar stores their paths in its configuration and uses them when
 constructing the server command.
 
 After setup, use the star icon in the menu bar to start or stop the server,
-open its log, or open Settings. While one of the app's windows is frontmost,
-the same lifecycle commands are in the Server menu of the menu bar. Applying
-settings while the server is running restarts it with the updated
-configuration. The status menu also shows the server's status and when it
-last served a request — `unused` until it has served one, a relative time
-after that, and a dash while it is not running.
+open its log, or open Settings. The menu also names the model's detected type
+and file, and clicking that row opens the Model settings pane. While one of
+the app's windows is frontmost, the same lifecycle commands are in the Server
+menu of the menu bar. Applying settings while the server is running restarts
+it with the updated configuration. The status menu also shows the server's
+status and when it last served a request — `unused` until it has served one, a
+relative time after that, and a dash while it is not running.
 
 ## Settings
 
@@ -184,7 +185,11 @@ current pane, up to the height of the screen. Return applies and Esc reverts.
   crash or if it stops responding, a preview of the command that runs on
   Apply, and a restore of model tuning defaults.
 - **Model**: the `ds4-server` executable and main GGUF model, detected model
-  details, and vision encoder settings for models that support them.
+  details, and vision encoder settings for models that support them. Every
+  path picker remembers its five most recently applied files. The vision,
+  DSpark and legacy MTP lists are kept per model family. A file deleted from
+  a mounted disk drops out; one on an unmounted volume stays, disabled.
+  Clear Menu empties a list at once and changes no setting.
 - **Server**: the HTTP host and port, browser client access, the default
   output token limit, and resident session batching.
 - **Performance**: context size, prefill chunk, GPU power limit, CPU helper

@@ -68,6 +68,19 @@ final class SettingsDerivedStateTests: XCTestCase {
 
     // MARK: - Reuse vs. re-inspect
 
+    func testValidationMessageHeightCountsOnlyShownMessagesInThePane() {
+        var messages = SettingsValidationMessages()
+        messages.heights[.mtpMode] = 20
+        messages.heights[.mtpPath] = 36
+        messages.heights[.powerPercent] = 18
+        messages.shown = [.mtpMode, .powerPercent]
+
+        // A message measured earlier but no longer shown adds nothing.
+        XCTAssertEqual(messages.height(in: .mtp), 20)
+        XCTAssertEqual(messages.height(in: .performance), 18)
+        XCTAssertEqual(messages.height(in: .general), 0)
+    }
+
     func testUnchangedPathAndFileReusesThePreviousProfile() throws {
         let model = try writeModel(named: "model.gguf", architecture: "glm5-next")
         let config = config(modelPath: model.path)

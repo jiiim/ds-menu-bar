@@ -330,6 +330,39 @@ final class ServerConfigurationTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(ServerConfiguration.Config.self, from: legacy).mtpMode, .external)
     }
 
+    func testLoadingCopiesALinkProfileToTheResolvedKey() throws {
+        let suiteName = "dsmenubar-tests-\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Unable to create isolated defaults")
+            return
+        }
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dsmenubar-load-link-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = directory.appendingPathComponent("model.gguf")
+        try Data().write(to: model)
+        let link = directory.appendingPathComponent("current.gguf")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: model)
+        let realModel = ServerConfiguration.Config.modelKey(
+            for: model.path,
+            serverPath: ""
+        )
+        XCTAssertNotEqual(realModel, link.path)
+
+        var saved = DS4TuningProfile()
+        saved.ctxSize = 222_222
+        var stored = ServerConfiguration.Config(modelPath: "/models/other.gguf")
+        stored.modelProfiles[link.path] = saved
+        defaults.set(try JSONEncoder().encode(stored), forKey: "dsmenubar.config")
+
+        let loaded = ServerConfiguration(defaults: defaults).snapshot()
+
+        XCTAssertEqual(loaded.modelProfiles[realModel], saved)
+        XCTAssertEqual(loaded.modelProfiles[link.path], saved)
+    }
+
     func testExistingVisionPathMigratesToEnabled() throws {
         let legacy = "{\"visionPath\":\"/tmp/vision.gguf\"}".data(using: .utf8)!
         let decoded = try JSONDecoder().decode(ServerConfiguration.Config.self, from: legacy)

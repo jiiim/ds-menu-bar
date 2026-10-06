@@ -1062,6 +1062,14 @@ final class ServerCommandTests: XCTestCase {
         XCTAssertFalse(ServerConfiguration.Config.isValidMemoryBudget("GB"))
     }
 
+    func testListeningAddressBracketsIPv6AndKeepsTheWildcard() {
+        XCTAssertEqual(DS4ServerCommand.listeningAddress(host: "127.0.0.1", port: 8000), "127.0.0.1:8000")
+        XCTAssertEqual(DS4ServerCommand.listeningAddress(host: "0.0.0.0", port: 8000), "0.0.0.0:8000")
+        XCTAssertEqual(DS4ServerCommand.listeningAddress(host: "localhost", port: 9000), "localhost:9000")
+        XCTAssertEqual(DS4ServerCommand.listeningAddress(host: "::1", port: 8000), "[::1]:8000")
+        XCTAssertEqual(DS4ServerCommand.listeningAddress(host: "[::]", port: 8000), "[::]:8000")
+    }
+
     func testHealthProbeURLHostMapsWildcardBindAddressesToLoopback() {
         // Wildcards are not connectable through URLSession; probe loopback.
         XCTAssertEqual(DS4ServerCommand.healthProbeURLHost(for: "0.0.0.0"), "127.0.0.1")

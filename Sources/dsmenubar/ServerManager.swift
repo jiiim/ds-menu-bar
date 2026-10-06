@@ -83,6 +83,7 @@ final class ServerManager: ObservableObject {
     @Published private(set) var keepsAwakeWhileRunning: Bool
     @Published private(set) var confirmQuitWhileServerActive: Bool
     @Published private(set) var autoRestartServer: Bool
+    @Published private(set) var recentSelections: RecentSelections
     @Published private(set) var keepAwakeState: KeepAwakeState = .off
 
     // ASCII only: pmset mangles non-ASCII in assertion names, and the name
@@ -104,6 +105,22 @@ final class ServerManager: ObservableObject {
     private var activeLaunchSource: ServerLaunchSource?
     private var activeLaunchAttemptID: UUID?
     private var reportedLaunchAttemptID: UUID?
+    /// The status menu reads this instead of the file, so opening the menu
+    /// never waits on a GGUF header. `refreshActiveModelInfo` keeps it current.
+    @Published private(set) var activeModelInfo = ActiveModelInfo.empty
+    private let activeModelCache = ActiveModelCache()
+    private let inspectModelProfile: @Sendable (String) -> DS4ModelProfile
+    private var activeModelRefreshTask: Task<Void, Never>?
+    private var activeModelRefreshLocation: ActiveModelDescription.Location?
+    /// Bumped per refresh so a late inspection cannot overwrite a newer one.
+    private var activeModelRefreshGeneration = 0
+    /// The applied model's profile, when an Apply or a status-menu read has
+    /// inspected it. The next Apply files the vision and support paths that
+    /// model used under its family.
+    private var appliedModelProfile: (
+        location: ActiveModelDescription.Location,
+        profile: DS4ModelProfile
+    )?
 
     /// One automatic restart per incident. Set when an automatic restart is
     /// started, cleared only after a run has been healthy for
@@ -126,17 +143,22 @@ final class ServerManager: ObservableObject {
         processManager: ProcessManager = ProcessManager(),
         healthChecker: HealthChecker = HealthChecker(),
         stabilityWindow: TimeInterval = AutoRestartPolicy.stabilityWindow,
-        notificationSink: NotificationSink? = nil
+        notificationSink: NotificationSink? = nil,
+        inspectModelProfile: @escaping @Sendable (String) -> DS4ModelProfile = {
+            GGUFModelInspector.profile(for: $0)
+        }
     ) {
         self.config = config
         self.processManager = processManager
         self.healthChecker = healthChecker
         self.stabilityWindow = stabilityWindow
         self.notificationSink = notificationSink
+        self.inspectModelProfile = inspectModelProfile
         showsPerformanceInMenuBar = config.showsPerformanceInMenuBar
         keepsAwakeWhileRunning = config.keepsAwakeWhileRunning
         confirmQuitWhileServerActive = config.confirmQuitWhileServerActive
         autoRestartServer = config.autoRestartServer
+        recentSelections = config.recentSelections
         wireCallbacks()
         processManager.setPerformanceMonitoring(showsPerformanceInMenuBar)
         externalPower.onChange = { [weak self] in
@@ -423,10 +445,110 @@ final class ServerManager: ObservableObject {
         autoRestartServer = requested
     }
 
+    /// Forget one row's history in Settings' recent menus. Takes effect at
+    /// once; no setting changes, so there is nothing to apply.
+    func clearRecentSelections(field: RecentSelections.Field, scope: String? = nil) {
+        config.clearRecentSelections(field: field, scope: scope)
+        recentSelections = config.recentSelections
+    }
+
     /// Snapshot used by Settings to edit a draft without mutating the running
     /// process until the user applies it.
     func configurationSnapshot() -> ServerConfiguration.Config {
         config.snapshot()
+    }
+
+    /// Recompute the status menu's description of the configured model. The
+    /// cheap part — resolve the path and read its identity — runs here; a miss
+    /// schedules the GGUF header read off the main thread, so opening the menu
+    /// never waits on the file. Apply and initial setup prime the cache with
+    /// the profile they already inspected, so the type is usually already
+    /// there.
+    func refreshActiveModelInfo() {
+        let current = config.snapshot()
+        let location = ActiveModelDescription.locate(
+            modelPath: current.modelPath,
+            serverPath: current.serverPath
+        )
+        // The same file is already being read; leave that work alone.
+        if activeModelRefreshTask != nil, activeModelRefreshLocation == location {
+            return
+        }
+        if let cached = activeModelCache.cachedInfo(for: location) {
+            invalidateActiveModelRefresh()
+            if activeModelInfo != cached { activeModelInfo = cached }
+            return
+        }
+        invalidateActiveModelRefresh()
+        let placeholder = ActiveModelDescription.placeholder(location: location)
+        if activeModelInfo != placeholder { activeModelInfo = placeholder }
+        guard location.isAvailable else {
+            activeModelCache.store(placeholder, for: location)
+            return
+        }
+        let generation = activeModelRefreshGeneration
+        activeModelRefreshLocation = location
+        let path = location.resolvedPath
+        let inspect = inspectModelProfile
+        activeModelRefreshTask = Task { [weak self] in
+            let profile = await Task.detached(priority: .utility) {
+                inspect(path)
+            }.value
+            guard !Task.isCancelled, let self,
+                  self.activeModelRefreshGeneration == generation
+            else { return }
+            let info = ActiveModelDescription.make(location: location, profile: profile)
+            self.activeModelCache.store(info, for: location)
+            self.appliedModelProfile = (location, profile)
+            if self.activeModelInfo != info { self.activeModelInfo = info }
+            self.activeModelRefreshTask = nil
+            self.activeModelRefreshLocation = nil
+        }
+    }
+
+    /// Describe the model from a profile the caller already inspected, so the
+    /// status menu does not read the header a second time.
+    private func primeActiveModelInfo(with profile: DS4ModelProfile) {
+        // A read started for the previous model must not land after this one.
+        invalidateActiveModelRefresh()
+        let current = config.snapshot()
+        let location = ActiveModelDescription.locate(
+            modelPath: current.modelPath,
+            serverPath: current.serverPath
+        )
+        let info = ActiveModelDescription.make(location: location, profile: profile)
+        activeModelCache.store(info, for: location)
+        appliedModelProfile = (location, profile)
+        if activeModelInfo != info { activeModelInfo = info }
+    }
+
+    /// The profile of the model `config` names: the one already inspected
+    /// when it still describes that file, otherwise a header read. Only an
+    /// Apply that changes the model needs it, for the paths left behind.
+    private func profileOfModel(in config: ServerConfiguration.Config) async -> DS4ModelProfile? {
+        let location = ActiveModelDescription.locate(
+            modelPath: config.modelPath,
+            serverPath: config.serverPath
+        )
+        guard location.isAvailable else { return nil }
+        if let applied = appliedModelProfile, applied.location == location {
+            return applied.profile
+        }
+        let inspect = inspectModelProfile
+        let path = location.resolvedPath
+        return await Task.detached(priority: .userInitiated) {
+            inspect(path)
+        }.value
+    }
+
+    /// Discard any read that is still in flight. Every path that resolves the
+    /// description without starting a read calls this, so a result computed
+    /// for an older model or file cannot overwrite the current one.
+    private func invalidateActiveModelRefresh() {
+        activeModelRefreshGeneration &+= 1
+        activeModelRefreshTask?.cancel()
+        activeModelRefreshTask = nil
+        activeModelRefreshLocation = nil
     }
 
     /// Apply the app's login-item setting without restarting ds4-server.
@@ -449,6 +571,8 @@ final class ServerManager: ObservableObject {
             modelPath: modelPath,
             modelProfile: modelProfile
         )
+        recentSelections = config.recentSelections
+        primeActiveModelInfo(with: modelProfile)
     }
 
     /// Clear the current server log and its rotated backup. ProcessManager
@@ -579,6 +703,31 @@ final class ServerManager: ObservableObject {
         let vision: DS4VisionProfile
     }
 
+    /// The outgoing configuration and its model family, used to remember
+    /// resource paths only after Apply succeeds.
+    struct ModelHistoryInspection {
+        let previous: ServerConfiguration.Config
+        let model: DS4ModelProfile?
+    }
+
+    /// Prepare history before committing a draft. A cache miss reads the
+    /// outgoing model off the main thread, without changing applied state.
+    func inspectModelHistory(
+        for newConfig: ServerConfiguration.Config,
+        model: DS4ModelProfile
+    ) async -> ModelHistoryInspection {
+        let previous = config.snapshot()
+        let sameModel = ServerConfiguration.Config.modelKey(
+            for: previous.modelPath,
+            serverPath: previous.serverPath
+        ) == ServerConfiguration.Config.modelKey(
+            for: newConfig.modelPath,
+            serverPath: newConfig.serverPath
+        )
+        let previousModel = sameModel ? model : await profileOfModel(in: previous)
+        return ModelHistoryInspection(previous: previous, model: previousModel)
+    }
+
     /// Apply a complete Settings snapshot. A live server is restarted so the
     /// new command line takes effect; a stopped server uses it on its next start.
     ///
@@ -586,15 +735,20 @@ final class ServerManager: ObservableObject {
     /// paths. Passing nil re-reads them here, on whatever thread called — which
     /// for a Settings Apply is the main one.
     ///
-    /// Passing them in reads no file at this point, so a GGUF replaced between
-    /// the caller's inspection and this call is validated against the older
-    /// profile. `ProcessManager.launch` re-reads and re-validates every path
+    /// `history` must describe the currently applied configuration. The caller
+    /// can discard it if the draft changes while its inspection is in flight.
+    ///
+    /// Passing the profiles in reads no GGUF header at this point, so a GGUF
+    /// replaced between inspection and this call is validated against the
+    /// older profile. `ProcessManager.launch` re-reads and re-validates every path
     /// before the child starts, which is where that is caught.
     @discardableResult
     func applyConfiguration(
         _ newConfig: ServerConfiguration.Config,
-        inspected: InspectedProfiles? = nil
+        inspected: InspectedProfiles? = nil,
+        history: ModelHistoryInspection
     ) -> ApplyResult {
+        guard history.previous == config.snapshot() else { return .invalid }
         let serverDirectory = DS4ServerCommand.serverDirectory(for: newConfig.serverPath)
         let modelProfile = inspected?.model
             ?? GGUFModelInspector.profile(for: newConfig.modelPath, relativeTo: serverDirectory)
@@ -626,6 +780,17 @@ final class ServerManager: ObservableObject {
         objectWillChange.send()
         config.replace(with: newConfig)
         let warning = config.save()?.message
+        // Only now, with the configuration applied and its model validated,
+        // does anything enter the recent menus.
+        config.recordAppliedSelections(
+            previous: history.previous,
+            previousModel: history.model,
+            appliedModel: modelProfile
+        )
+        recentSelections = config.recentSelections
+        // The caller inspected this model for validation; reuse it instead of
+        // making the status menu read the header again.
+        primeActiveModelInfo(with: modelProfile)
         if shouldRestart {
             restart()
             return ApplyResult(kind: .appliedAndRestarting, warning: warning)

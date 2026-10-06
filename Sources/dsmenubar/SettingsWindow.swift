@@ -45,6 +45,7 @@ struct SettingsView: View {
     @State var windowFitter = SettingsWindowFitter()
     /// Each pane's last measured content height; see `fitted(_:)`.
     @State var paneContentHeight: [SettingsPane: CGFloat] = [:]
+    @State var validationMessages = SettingsValidationMessages()
     @State var quantumRowReserve = SettingsReservedRow()
     @State var isSettingsVisible = false
     @SceneStorage("dsmenubar.settingsPane") var selectedPaneRaw = SettingsPane.general.rawValue
@@ -237,16 +238,16 @@ struct SettingsView: View {
             // A pane whose content is unchanged since it was last shown
             // reports nothing on its return, so fit from what it reported
             // then. A pane that does report has already run by the next
-            // runloop turn and left its current height here. This fit also
-            // applies to a pane showing a validation message.
-            DispatchQueue.main.async {
-                fitWindow(to: activePane)
-            }
+            // runloop turn and left its current height here.
+            fitWindow(to: activePane)
+        }
+        .onChange(of: validationMessages) { _, _ in
+            fitWindow(to: activePane)
         }
         .onChange(of: quantumRowReserve.height) { _, _ in
             // The room kept for the hidden row was measured after the pane
             // was fitted without it.
-            guard activePane == .server, !activePaneShowsValidationMessage else { return }
+            guard activePane == .server else { return }
             fitWindow(to: .server)
         }
         .task(id: SettingsDerivedTaskID(
@@ -602,9 +603,10 @@ struct SettingsView: View {
     }
 
     /// Reports the pane's content height to the window fitter whenever it
-    /// changes. While the pane shows a validation message, the
-    /// window holds its height and the pane scrolls: a typo should not move
-    /// the action bar, and the scroll bar leaves once the field is corrected.
+    /// changes. The window fits the pane less its validation messages: a typo
+    /// should not move the action bar, so a message scrolls the pane and the
+    /// scroll bar leaves once the field is corrected. Rows that appear or
+    /// leave with a message still resize the window.
     func fitted<Pane: View>(
         _ pane: SettingsPane,
         @ViewBuilder content: () -> Pane
@@ -614,14 +616,16 @@ struct SettingsView: View {
                 geometry.contentSize.height
             } action: { _, height in
                 paneContentHeight[pane] = height
-                guard pane == activePane, !activePaneShowsValidationMessage else { return }
+                guard pane == activePane else { return }
                 fitWindow(to: pane)
             }
     }
 
     func fitWindow(to pane: SettingsPane) {
-        guard let height = paneContentHeight[pane] else { return }
-        windowFitter.fit(contentHeight: height + reservedHeight(in: pane))
+        windowFitter.fitAfterLayout {
+            guard let height = paneContentHeight[pane] else { return nil }
+            return height - validationMessages.height(in: pane) + reservedHeight(in: pane)
+        }
     }
 
     /// Room kept for a row that typing in another field can reveal. The row
@@ -632,9 +636,6 @@ struct SettingsView: View {
         return quantumRowReserve.height ?? 0
     }
 
-    var activePaneShowsValidationMessage: Bool {
-        validationErrors.keys.contains { SettingsPane.containing($0) == activePane }
-    }
 
 
     var embeddedMTPBinding: Binding<Bool> {
@@ -910,6 +911,26 @@ struct SettingsView: View {
                 errors[.visionPath] = "Choose a readable compatible vision GGUF."
             }
 
+            // Remembering the outgoing resources may need their model's
+            // header too. Keep that read in the cancellable preparation pass.
+            let history: ServerManager.ModelHistoryInspection?
+            if errors.isEmpty {
+                history = await server.inspectModelHistory(for: checkedConfig, model: checked.model)
+                guard applyValidationID == validationID, draft == candidate else {
+                    if applyValidationID == validationID {
+                        applyValidationID = nil
+                        isApplyingSettings = false
+                        showNotice(
+                            "Settings changed while the files were checked. Apply again.",
+                            isFailure: true
+                        )
+                    }
+                    return
+                }
+            } else {
+                history = nil
+            }
+
             serverValidationError = checked.serverError
             modelValidationError = checked.modelError
             // `checkedConfig`, not `candidate`: a reinspection pass above may
@@ -935,7 +956,7 @@ struct SettingsView: View {
             applyValidationID = nil
             isApplyingSettings = false
 
-            guard errors.isEmpty else {
+            guard errors.isEmpty, let history else {
                 revealFirstValidationError(in: errors)
                 showNotice(applyRefusedNotice, isFailure: true)
                 return
@@ -948,7 +969,8 @@ struct SettingsView: View {
                     model: checked.model,
                     support: checked.support,
                     vision: checked.vision
-                )
+                ),
+                history: history
             )
         }
     }
@@ -971,7 +993,8 @@ struct SettingsView: View {
     func finishApplying(
         _ config: ServerConfiguration.Config,
         identities: SettingsDerivedFileIdentities,
-        inspected: ServerManager.InspectedProfiles
+        inspected: ServerManager.InspectedProfiles,
+        history: ServerManager.ModelHistoryInspection
     ) {
         // Report what the manager actually did — a .starting status whose
         // process never came up is applied, not restarted.
@@ -979,21 +1002,18 @@ struct SettingsView: View {
         // The profiles come from the same off-main pass that produced
         // `identities`, so the manager re-validates without reopening three
         // GGUFs on the main thread.
-        let result = server.applyConfiguration(config, inspected: inspected)
+        let result = server.applyConfiguration(config, inspected: inspected, history: history)
         switch result.kind {
         case .invalid:
-            // Defensive. The manager re-runs the same pure validation over the
-            // profiles passed in above, so it has nothing this view did not
-            // already see — a file replaced after that inspection is caught by
-            // ProcessManager.launch's preflight, which re-reads every path,
-            // rather than here. Should the two ever disagree, show the field
-            // rather than leaving Apply looking like it did nothing.
+            // The manager also refuses an Apply if the applied configuration
+            // changed while history was inspected. Otherwise, any validation
+            // disagreement should reveal the field that needs attention.
             let errors = settingsValidationErrors(for: config)
             validationErrors = errors
             showNotice(
                 revealFirstValidationError(in: errors)
                     ? applyRefusedNotice
-                    : "Settings not applied. Re-check the selected files.",
+                    : "Settings not applied. Review the settings and apply again.",
                 isFailure: true
             )
             return

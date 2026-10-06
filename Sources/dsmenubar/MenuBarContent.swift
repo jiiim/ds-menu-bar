@@ -79,7 +79,7 @@ extension ServerStatus {
 @MainActor
 final class StatusBarController: NSObject, NSMenuDelegate {
     private let server: ServerManager
-    private let openSettings: () -> Void
+    private let openSettings: (ServerSettingsDestination) -> Void
     private let openAbout: () -> Void
     private let requestQuit: () -> Void
     private let statusItem: NSStatusItem
@@ -91,10 +91,17 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private var rendered: RenderedStatusItem?
     private var renderedStatusInformation: String?
 
+    /// Names the server and the address it is configured to listen at, so
+    /// the address clients need is in the menu. "At", not "on": the line is
+    /// there while the server is stopped too.
     private let serverItem = NSMenuItem(title: "ds4-server", action: nil, keyEquivalent: "")
     private let statusTextItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let lastActivityItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let serverActionItem = NSMenuItem(title: "", action: nil, keyEquivalent: "s")
+    /// Names the model the app is configured to run and opens the Model pane;
+    /// switching models happens there, where the file is checked before it is
+    /// applied.
+    private let modelItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let speedItem = NSMenuItem(
         title: "Show Speeds in Menu Bar",
         action: nil,
@@ -117,7 +124,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     init(
         server: ServerManager,
-        openSettings: @escaping () -> Void,
+        openSettings: @escaping (ServerSettingsDestination) -> Void,
         openAbout: @escaping () -> Void,
         requestQuit: @escaping () -> Void
     ) {
@@ -166,6 +173,9 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         serverActionItem.action = #selector(toggleServer)
         serverActionItem.keyEquivalentModifierMask = .command
         serverActionItem.isEnabled = true
+        modelItem.target = self
+        modelItem.action = #selector(showModelSettings)
+        modelItem.isEnabled = true
         speedItem.target = self
         speedItem.action = #selector(toggleSpeedDisplay)
         speedItem.isEnabled = true
@@ -177,14 +187,17 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         menu.addItem(statusTextItem)
         menu.addItem(lastActivityItem)
         menu.addItem(.separator())
+        // Actions, then the options that stay on, then the app's own items in
+        // the order of every app menu: About, Settings, and Quit on its own.
         menu.addItem(serverActionItem)
+        menu.addItem(modelItem)
         menu.addItem(item("Open Log in Console", action: #selector(openLog)))
+        menu.addItem(.separator())
         menu.addItem(speedItem)
         menu.addItem(keepAwakeItem)
         menu.addItem(.separator())
-        menu.addItem(item("Settings…", action: #selector(showSettings), keyEquivalent: ","))
-        menu.addItem(.separator())
         menu.addItem(item("About DS Menu Bar", action: #selector(showAbout)))
+        menu.addItem(item("Settings…", action: #selector(showSettings), keyEquivalent: ","))
         menu.addItem(.separator())
         menu.addItem(item("Quit DS Menu Bar", action: #selector(quit), keyEquivalent: "q"))
         return menu
@@ -247,6 +260,13 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             if menuIsOpen { refreshMenu() }
         }
         .store(in: &cancellables)
+
+        server.$activeModelInfo
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.updateModelItem()
+            }
+            .store(in: &cancellables)
     }
 
     /// The blink means something only mid-transition. Running it for the app's
@@ -314,6 +334,11 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     }
 
     private func refreshMenu() {
+        let configuration = server.configurationSnapshot()
+        serverItem.title = "ds4-server at " + DS4ServerCommand.listeningAddress(
+            host: configuration.host,
+            port: configuration.port
+        )
         statusTextItem.title = "Status: \(server.status.menuText)"
         updateLastActivityItem()
         serverActionItem.title = server.status.actionTitle
@@ -326,6 +351,36 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         // was not would be worse than no item at all.
         keepAwakeItem.state = server.keepsAwakeWhileRunning ? .on : .off
         keepAwakeItem.subtitle = server.keepAwakeState.menuSubtitle
+        server.refreshActiveModelInfo()
+        updateModelItem()
+    }
+
+    /// One row that answers "which model is this?" without listing every
+    /// profile the app has ever stored, and points at the pane where it can be
+    /// changed.
+    private func updateModelItem() {
+        let info = server.activeModelInfo
+        guard !info.fileName.isEmpty else {
+            modelItem.isHidden = true
+            return
+        }
+        modelItem.isHidden = false
+        if !info.isAvailable {
+            modelItem.title = "Model: \(info.fileName)"
+            modelItem.subtitle = "File not found"
+        } else if !info.isInspected {
+            modelItem.title = "Model: \(info.fileName)"
+            modelItem.subtitle = "Checking model type…"
+        } else if let typeName = info.typeName {
+            modelItem.title = "Model: \(typeName)"
+            modelItem.subtitle = info.fileName
+        } else {
+            modelItem.title = "Model: \(info.fileName)"
+            modelItem.subtitle = "Unknown model type"
+        }
+        modelItem.toolTip = info.isAvailable
+            ? info.resolvedPath
+            : "\(info.resolvedPath) — file not found"
     }
 
     private func updateLastActivityItem() {
@@ -359,7 +414,11 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     }
 
     @objc private func showSettings() {
-        openSettings()
+        openSettings(.general)
+    }
+
+    @objc private func showModelSettings() {
+        openSettings(.model)
     }
 
     @objc private func showAbout() {

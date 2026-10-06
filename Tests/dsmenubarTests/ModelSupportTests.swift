@@ -415,6 +415,145 @@ final class ModelSupportTests: XCTestCase {
         XCTAssertEqual(selected.modelProfiles[legacyKey], saved)
     }
 
+    /// The layout the open panel resolves away: a model link beside
+    /// ds4-server pointing through a linked `gguf` directory.
+    private func makeLinkedModelLayout() throws -> (
+        root: URL,
+        serverPath: String,
+        realModel: String
+    ) {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dsmenubar-model-key-\(UUID().uuidString)")
+        let store = root.appendingPathComponent("store")
+        let server = root.appendingPathComponent("ds4")
+        try FileManager.default.createDirectory(at: store, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: server, withIntermediateDirectories: true)
+        let model = store.appendingPathComponent("model.gguf")
+        try Data().write(to: model)
+        try FileManager.default.createSymbolicLink(
+            at: server.appendingPathComponent("gguf"),
+            withDestinationURL: store
+        )
+        try FileManager.default.createSymbolicLink(
+            at: server.appendingPathComponent("current.gguf"),
+            withDestinationURL: server.appendingPathComponent("gguf/model.gguf")
+        )
+        let realModel = try XCTUnwrap(realpath(model.path, nil).map { real in
+            defer { free(real) }
+            return String(cString: real)
+        })
+        return (root, server.appendingPathComponent("ds4-server").path, realModel)
+    }
+
+    func testModelKeyFollowsFileAndDirectorySymlinks() throws {
+        let layout = try makeLinkedModelLayout()
+        defer { try? FileManager.default.removeItem(at: layout.root) }
+
+        for path in ["current.gguf", "gguf/model.gguf", layout.realModel] {
+            XCTAssertEqual(
+                ServerConfiguration.Config.modelKey(for: path, serverPath: layout.serverPath),
+                layout.realModel,
+                path
+            )
+        }
+    }
+
+    func testUnresolvableModelKeepsItsSpelledKey() throws {
+        let layout = try makeLinkedModelLayout()
+        defer { try? FileManager.default.removeItem(at: layout.root) }
+        let directory = DS4ServerCommand.serverDirectory(for: layout.serverPath)
+
+        XCTAssertEqual(
+            ServerConfiguration.Config.modelKey(
+                for: "gguf/missing.gguf",
+                serverPath: layout.serverPath
+            ),
+            URL(fileURLWithPath: directory)
+                .appendingPathComponent("gguf/missing.gguf")
+                .standardizedFileURL.path
+        )
+    }
+
+    func testProfileSavedUnderLinkSpellingIsCopiedToTheResolvedKey() throws {
+        let layout = try makeLinkedModelLayout()
+        defer { try? FileManager.default.removeItem(at: layout.root) }
+        let directory = DS4ServerCommand.serverDirectory(for: layout.serverPath)
+        let spelledKey = URL(fileURLWithPath: directory)
+            .appendingPathComponent("current.gguf")
+            .standardizedFileURL.path
+        var saved = DS4TuningProfile()
+        saved.ctxSize = 222_222
+
+        var config = ServerConfiguration.Config(
+            serverPath: layout.serverPath,
+            modelPath: "/models/other.gguf"
+        )
+        config.modelProfiles[spelledKey] = saved
+
+        let selected = config.selectingModel(
+            path: "current.gguf",
+            profile: .from(architecture: "deepseek4")
+        )
+
+        XCTAssertEqual(selected.ctxSize, saved.ctxSize)
+        XCTAssertEqual(
+            selected.modelProfiles[layout.realModel],
+            DS4TuningProfile(configuration: selected)
+        )
+        XCTAssertEqual(selected.modelProfiles[spelledKey], saved)
+    }
+
+    func testResolvingProfileKeysMakesALinkProfileReachableFromTheTarget() throws {
+        let layout = try makeLinkedModelLayout()
+        defer { try? FileManager.default.removeItem(at: layout.root) }
+        let directory = DS4ServerCommand.serverDirectory(for: layout.serverPath)
+        let linkKey = URL(fileURLWithPath: directory)
+            .appendingPathComponent("current.gguf")
+            .standardizedFileURL.path
+        var saved = DS4TuningProfile()
+        saved.ctxSize = 222_222
+
+        var config = ServerConfiguration.Config(
+            serverPath: layout.serverPath,
+            modelPath: "/models/other.gguf"
+        )
+        config.modelProfiles[linkKey] = saved
+        config.modelProfiles["/models/missing.gguf"] = DS4TuningProfile()
+        let resolved = config.resolvingModelProfileKeys()
+
+        XCTAssertEqual(resolved.modelProfiles[layout.realModel], saved)
+        XCTAssertEqual(resolved.modelProfiles[linkKey], saved)
+        XCTAssertNotNil(resolved.modelProfiles["/models/missing.gguf"])
+        // The open panel returns the target; its profile is the link's.
+        let selected = resolved.selectingModel(
+            path: layout.realModel,
+            profile: .from(architecture: "deepseek4")
+        )
+        XCTAssertEqual(selected.ctxSize, saved.ctxSize)
+    }
+
+    func testResolvingProfileKeysKeepsAnEntryAlreadyUnderTheResolvedKey() throws {
+        let layout = try makeLinkedModelLayout()
+        defer { try? FileManager.default.removeItem(at: layout.root) }
+        let directory = DS4ServerCommand.serverDirectory(for: layout.serverPath)
+        let linkKey = URL(fileURLWithPath: directory)
+            .appendingPathComponent("current.gguf")
+            .standardizedFileURL.path
+        var linked = DS4TuningProfile()
+        linked.ctxSize = 111_111
+        var target = DS4TuningProfile()
+        target.ctxSize = 222_222
+
+        var config = ServerConfiguration.Config(serverPath: layout.serverPath)
+        config.modelProfiles[linkKey] = linked
+        config.modelProfiles[layout.realModel] = target
+
+        XCTAssertEqual(
+            config.resolvingModelProfileKeys().modelProfiles[layout.realModel],
+            target
+        )
+    }
+
     func testExplicitLoadedKeyPreventsRevertFromOverwritingAnotherProfile() {
         let serverPath = "/opt/ds4/ds4-server"
         let keyA = ServerConfiguration.Config.modelKey(

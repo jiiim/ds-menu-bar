@@ -136,6 +136,11 @@ struct DS4ModelProfile: Equatable {
     }
     var isKnown: Bool { family != .unknown && family != .supportModel }
     var isSupportArtifact: Bool { family == .supportModel }
+    /// Identity shared by resources that are interchangeable across models:
+    /// one family. Vision encoders and support GGUFs are chosen per family —
+    /// `DS4VisionProfile.isCompatible(with:)` is a family rule — so a recent
+    /// list keyed by this value follows the file rather than the quant.
+    var recentResourceScope: String { family.rawValue }
 
     static let unknown = Self(family: .unknown, architecture: nil)
 

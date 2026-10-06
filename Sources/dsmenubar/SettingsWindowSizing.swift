@@ -23,6 +23,8 @@ final class SettingsWindowFitter {
     private var pendingContentHeight: CGFloat?
     /// Set around the fitter's own animated `setFrame`.
     private var isResizing = false
+    /// The latest `fitAfterLayout` request, while one waits for its turn.
+    private var scheduledContentHeight: (@MainActor () -> CGFloat?)?
 
     /// Size the window so `contentHeight` fits between the bars.
     func fit(contentHeight: CGFloat) {
@@ -35,6 +37,24 @@ final class SettingsWindowFitter {
         equalizePaneTabs()
         guard !isResizing, let visibleHeight = visiblePaneHeight(in: window) else { return }
         apply(targetHeight: window.frame.height - visibleHeight + contentHeight, to: window)
+    }
+
+    /// Fit once the current layout pass has reported everything. A pane's
+    /// height and its validation messages' heights arrive in separate
+    /// callbacks; fitting between them would resize toward a height that is
+    /// about to be corrected. Calls made before the turn comes coalesce into
+    /// the latest, whose `contentHeight` is read then.
+    func fitAfterLayout(_ contentHeight: @escaping @MainActor () -> CGFloat?) {
+        let isScheduled = scheduledContentHeight != nil
+        scheduledContentHeight = contentHeight
+        guard !isScheduled else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let request = scheduledContentHeight else { return }
+            scheduledContentHeight = nil
+            if let height = request() {
+                fit(contentHeight: height)
+            }
+        }
     }
 
     fileprivate func attach(_ window: NSWindow) {
@@ -130,6 +150,24 @@ struct SettingsReservedRow: Equatable {
         }
         let rowPadding = residentSessionsTop - defaultTokensFrame.minY - defaultTokensFrame.height
         return contentHeight + rowPadding
+    }
+}
+
+/// The validation messages a pane is showing and the height each adds to its
+/// row, so the window can be fitted to the pane without them. A message
+/// appearing or leaving then scrolls the pane instead of moving the action
+/// bar, while rows that appear alongside it still resize the window.
+struct SettingsValidationMessages: Equatable {
+    /// The VStack spacing of every row a message sits in.
+    static let rowSpacing: CGFloat = 4
+
+    var heights: [ServerConfiguration.Config.Field: CGFloat] = [:]
+    var shown: Set<ServerConfiguration.Config.Field> = []
+
+    func height(in pane: SettingsPane) -> CGFloat {
+        shown
+            .filter { SettingsPane.containing($0) == pane }
+            .reduce(0) { $0 + (heights[$1] ?? 0) }
     }
 }
 

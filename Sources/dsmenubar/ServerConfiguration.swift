@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright James Martin and DS Menu Bar contributors
 // SPDX-License-Identifier: MIT
 
+import Darwin
 import Foundation
 import os.log
 import ServiceManagement
@@ -19,6 +20,7 @@ final class ServerConfiguration {
     private(set) var keepsAwakeWhileRunning: Bool
     private(set) var confirmQuitWhileServerActive: Bool
     private(set) var autoRestartServer: Bool
+    private(set) var recentSelections: RecentSelections
     private let log = OSLog(subsystem: "com.jiiim.ds-menu-bar", category: "config")
 
     init(defaults: UserDefaults = .standard) {
@@ -38,6 +40,12 @@ final class ServerConfiguration {
             autoRestartServer = true
         } else {
             autoRestartServer = defaults.bool(forKey: Self.autoRestartKey)
+        }
+        if let data = defaults.data(forKey: Self.recentSelectionsKey),
+           let recents = try? JSONDecoder().decode(RecentSelections.self, from: data) {
+            recentSelections = recents
+        } else {
+            recentSelections = RecentSelections()
         }
         loadConfig()
     }
@@ -165,6 +173,7 @@ final class ServerConfiguration {
     private static let keepAwakeKey = "dsmenubar.keepAwakeWhileServerRuns"
     private static let confirmQuitKey = "dsmenubar.confirmQuitWhileServerActive"
     private static let autoRestartKey = "dsmenubar.autoRestartServer"
+    private static let recentSelectionsKey = "dsmenubar.recentSelections"
 
     var needsInitialSetup: Bool {
         guard defaults.object(forKey: Self.configKey) != nil else { return true }
@@ -175,7 +184,10 @@ final class ServerConfiguration {
     private func loadConfig() {
         if let data = defaults.data(forKey: Self.configKey),
            let config = try? JSONDecoder().decode(Config.self, from: data) {
-            values = config.normalized().storingCurrentModelProfile()
+            values = config.normalized()
+                .resolvingModelProfileKeys()
+                .storingCurrentModelProfile()
+            seedRecentSelectionsFromConfiguration()
         }
     }
 
@@ -193,6 +205,21 @@ final class ServerConfiguration {
         configured = configured.storingCurrentModelProfile()
         values = configured
         persistConfig()
+        // The files chosen at setup are the first entries in the recent menus,
+        // so the pickers have something to offer before the user returns to
+        // them from Settings.
+        updateRecentSelections { recents in
+            recents.record(
+                configured.serverPath,
+                for: .server,
+                fileKey: Config.recentFileKey(field: .server, serverPath: configured.serverPath)
+            )
+            recents.record(
+                configured.modelPath,
+                for: .model,
+                fileKey: Config.recentFileKey(field: .model, serverPath: configured.serverPath)
+            )
+        }
     }
 
     private func persistConfig() {
@@ -262,6 +289,72 @@ final class ServerConfiguration {
     func setAutoRestartServer(_ requested: Bool) {
         autoRestartServer = requested
         defaults.set(requested, forKey: Self.autoRestartKey)
+    }
+
+    /// Remember the paths an Apply changed, for the rows' recent menus. Like
+    /// the preferences above this is app-only state: it never enters the
+    /// applied configuration or the launch command, and nothing is
+    /// remembered until a configuration is applied. `previousModel` is the
+    /// profile of the model `previous` ran, when it is known; the vision and
+    /// support paths it used are filed under that family.
+    ///
+    /// Entries whose file is gone from a mounted volume are dropped at the
+    /// same time, so a history the user has stopped curating does not keep
+    /// them. One on an unmounted volume stays.
+    func recordAppliedSelections(
+        previous: Config,
+        previousModel: DS4ModelProfile?,
+        appliedModel: DS4ModelProfile
+    ) {
+        let applied = values
+        updateRecentSelections { recents in
+            recents.recordApply(
+                from: RecentSelections.entries(in: previous, model: previousModel),
+                to: RecentSelections.entries(in: applied, model: appliedModel),
+                fileKey: { Config.recentFileKey(field: $0.field, serverPath: applied.serverPath) }
+            )
+            recents.prune { list, path in
+                Config.recentPathAvailability(
+                    path,
+                    field: list.field,
+                    serverPath: applied.serverPath
+                ) == .missing
+            }
+        }
+    }
+
+    /// Forget one row's history. This takes effect at once, like Clear Menu
+    /// in a document app's Open Recent: it changes no setting, so there is
+    /// nothing for Apply to confirm.
+    func clearRecentSelections(field: RecentSelections.Field, scope: String? = nil) {
+        updateRecentSelections { $0.clear(field, scope: scope) }
+    }
+
+    private func seedRecentSelectionsFromConfiguration() {
+        let current = values
+        updateRecentSelections { recents in
+            recents.seed(
+                current.serverPath,
+                for: .server,
+                fileKey: Config.recentFileKey(field: .server, serverPath: current.serverPath)
+            )
+            recents.seed(
+                current.modelPath,
+                for: .model,
+                fileKey: Config.recentFileKey(field: .model, serverPath: current.serverPath)
+            )
+        }
+    }
+
+    /// Persist the history only when a change actually altered it.
+    private func updateRecentSelections(_ change: (inout RecentSelections) -> Void) {
+        var recents = recentSelections
+        change(&recents)
+        guard recents != recentSelections else { return }
+        recentSelections = recents
+        if let data = try? JSONEncoder().encode(recentSelections) {
+            defaults.set(data, forKey: Self.recentSelectionsKey)
+        }
     }
 
     /// Persist the current configuration and apply launch-at-login. Login-item
@@ -908,6 +1001,26 @@ extension ServerConfiguration.Config {
         return config
     }
 
+    /// Copy profiles saved under a symlinked spelling to the key of the file
+    /// the link names, now that `modelKey` follows links. Without this a
+    /// profile saved for a link would be missed when the open panel returns
+    /// the target. An entry already under the resolved key wins, and among
+    /// several spellings of one file the first in sorted order does, so a
+    /// load is deterministic. The original entries are retained for older
+    /// builds, which still look them up by spelling. Keys whose file cannot
+    /// be resolved stay as they are; `selectingModel` falls back to them.
+    func resolvingModelProfileKeys() -> Self {
+        var config = self
+        for key in modelProfiles.keys.sorted() {
+            guard let resolved = Self.realPath(key),
+                  resolved != key,
+                  config.modelProfiles[resolved] == nil
+            else { continue }
+            config.modelProfiles[resolved] = modelProfiles[key]
+        }
+        return config
+    }
+
     /// Store the current effective values in the profile for the selected
     /// model. This also migrates a pre-profile configuration on first load.
     func storingCurrentModelProfile(as explicitKey: String? = nil) -> Self {
@@ -933,7 +1046,13 @@ extension ServerConfiguration.Config {
         }
         config.modelPath = path
         let key = Self.modelKey(for: path, serverPath: config.serverPath)
+        let unresolved = Self.unresolvedModelKey(for: path, serverPath: config.serverPath)
         if let saved = config.modelProfiles[key] {
+            saved.applying(to: &config)
+        } else if unresolved != key, let saved = config.modelProfiles[unresolved] {
+            // Saved before keys followed symlinks, under the path as spelled.
+            // Copy it forward to the resolved key and retain it, like the
+            // legacy entry below: another spelling may still name it.
             saved.applying(to: &config)
         } else if let legacy = Self.legacyModelKey(for: path),
                   legacy != key,
@@ -976,7 +1095,138 @@ extension ServerConfiguration.Config {
     /// Canonical identity for a configured model. Relative model paths are
     /// resolved against ds4-server's working directory, matching inspection
     /// and launch rather than the menu app's unrelated working directory.
+    ///
+    /// Symlinks are followed, so a link and its target share one profile:
+    /// the open panel returns the target, while a configuration may name the
+    /// link. A file that cannot be resolved — missing, or on an unmounted
+    /// volume — keeps its unresolved key, which is also the profile lookup's
+    /// fallback once the file is back.
     static func modelKey(for path: String, serverPath: String) -> String {
+        let unresolved = unresolvedModelKey(for: path, serverPath: serverPath)
+        guard !unresolved.isEmpty else { return unresolved }
+        return realPath(unresolved) ?? unresolved
+    }
+
+    /// The path with every symlink followed, or nil when any component is
+    /// missing.
+    private static func realPath(_ path: String) -> String? {
+        guard let real = realpath(path, nil) else { return nil }
+        defer { free(real) }
+        return String(cString: real)
+    }
+
+    /// The file a ds4-server path names, for recognising two spellings of one
+    /// executable. Comparison only: the stored server path keeps its link,
+    /// because the launched server's working directory is the folder that
+    /// path names and relative resource paths resolve against it.
+    static func serverKey(for path: String) -> String {
+        let absolute = DS4ServerCommand.storingAbsolutePath(path)
+        guard !absolute.isEmpty else { return absolute }
+        return realPath(absolute) ?? absolute
+    }
+
+    /// How a recent-selection list tells two spellings of one file apart:
+    /// the profile key for GGUFs, which resolves relative paths against
+    /// `serverPath`, and `serverKey` for the executable.
+    static func recentFileKey(
+        field: RecentSelections.Field,
+        serverPath: String
+    ) -> (String) -> String {
+        switch field {
+        case .server:
+            return { serverKey(for: $0) }
+        case .model, .vision, .dspark, .legacyMTP:
+            return { modelKey(for: $0, serverPath: serverPath) }
+        }
+    }
+
+    /// Whether a remembered path can be offered again.
+    enum RecentPathAvailability: Equatable {
+        case available
+        /// The path cannot currently be used, including when an access
+        /// error prevents checking the file.
+        case unusable
+        /// The path leads onto a volume under /Volumes that is not mounted.
+        /// The file may well come back, so the entry stays.
+        case volumeNotMounted
+        /// Gone from a mounted file system. The entry is hidden and dropped
+        /// at the next Apply.
+        case missing
+    }
+
+    static func recentPathAvailability(
+        _ path: String,
+        field: RecentSelections.Field,
+        serverPath: String
+    ) -> RecentPathAvailability {
+        let resolved: String
+        switch field {
+        case .server:
+            resolved = DS4ServerCommand.storingAbsolutePath(path)
+            if FileManager.default.isExecutableRegularFile(atPath: resolved) {
+                return .available
+            }
+        case .model, .vision, .dspark, .legacyMTP:
+            resolved = DS4ServerCommand.resolving(
+                path,
+                relativeTo: DS4ServerCommand.serverDirectory(for: serverPath)
+            )
+            if FileManager.default.isReadableRegularFile(atPath: resolved) {
+                return .available
+            }
+        }
+        var attributes = stat()
+        if stat(resolved, &attributes) == 0 { return .unusable }
+        let failure = errno
+        // fileExists also returns false for access errors. Only confirmed
+        // absence may remove a remembered path; other failures can recover.
+        guard failure == ENOENT || failure == ENOTDIR else { return .unusable }
+        return isOnUnmountedVolume(resolved) ? .volumeNotMounted : .missing
+    }
+
+    /// Follow `path` through every symlink that exists, dangling or not, so a
+    /// link into an unmounted volume is recognised by where it points. Only
+    /// the /Volumes mount point decides: a folder left behind there by an
+    /// unclean eject is not a mounted volume.
+    private static func isOnUnmountedVolume(_ path: String) -> Bool {
+        var remaining = Array((path as NSString).pathComponents.dropFirst())
+        var current = "/"
+        var followed = 0
+        while !remaining.isEmpty {
+            let component = remaining.removeFirst()
+            if component == "." { continue }
+            if component == ".." {
+                // Every link so far has been followed, so the parent here is
+                // the real one.
+                current = (current as NSString).deletingLastPathComponent
+                continue
+            }
+            let next = (current as NSString).appendingPathComponent(component)
+            if followed < 32,
+               let target = try? FileManager.default.destinationOfSymbolicLink(atPath: next) {
+                followed += 1
+                let absolute = target.hasPrefix("/")
+                    ? target
+                    : (current as NSString).appendingPathComponent(target)
+                remaining = Array((absolute as NSString).pathComponents.dropFirst()) + remaining
+                current = "/"
+                continue
+            }
+            current = next
+        }
+        let components = (current as NSString).pathComponents
+        guard components.count > 2, components[1] == "Volumes" else { return false }
+        let mountPoint = URL(fileURLWithPath: "/Volumes")
+            .appendingPathComponent(components[2], isDirectory: true)
+        let isVolume = try? mountPoint.resourceValues(forKeys: [.isVolumeKey]).isVolume
+        return isVolume != true
+    }
+
+    /// Key shape used before symlinks were followed: the server-relative
+    /// path, standardized but naming whatever link the path spells. This
+    /// exists as a read fallback for persisted profiles and as the key of a
+    /// file that cannot be resolved.
+    private static func unresolvedModelKey(for path: String, serverPath: String) -> String {
         let directory = DS4ServerCommand.serverDirectory(for: serverPath)
         let resolved = DS4ServerCommand.resolving(path, relativeTo: directory)
         guard !resolved.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {

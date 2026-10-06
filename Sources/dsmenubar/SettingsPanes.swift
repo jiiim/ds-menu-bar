@@ -274,31 +274,33 @@ extension SettingsView {
             }
 
             Section("Metal") {
-                LabeledContent("GPU power limit") {
-                    if modelProfile.requiresFullPower {
-                        HStack(spacing: 10) {
-                            Text("100% required").foregroundStyle(.secondary)
-                            if draft.powerPercent != 100 {
-                                Button("Set to 100%") { draft.powerPercent = 100 }
+                VStack(alignment: .leading, spacing: 4) {
+                    LabeledContent("GPU power limit") {
+                        if modelProfile.requiresFullPower {
+                            HStack(spacing: 10) {
+                                Text("100% required").foregroundStyle(.secondary)
+                                if draft.powerPercent != 100 {
+                                    Button("Set to 100%") { draft.powerPercent = 100 }
+                                }
+                            }
+                        } else {
+                            let constraint = draft.integerConstraint(for: .powerPercent, modelProfile: modelProfile)
+                            HStack(spacing: 10) {
+                                Slider(
+                                    value: powerBinding,
+                                    in: Double(constraint?.minimum ?? 1)...Double(constraint?.maximum ?? 100),
+                                    step: Double(constraint?.step ?? 1)
+                                )
+                                    .frame(minWidth: 180)
+                                Text("\(draft.powerPercent)%")
+                                    .monospacedDigit()
+                                    .frame(width: 42, alignment: .trailing)
                             }
                         }
-                    } else {
-                        let constraint = draft.integerConstraint(for: .powerPercent, modelProfile: modelProfile)
-                        HStack(spacing: 10) {
-                            Slider(
-                                value: powerBinding,
-                                in: Double(constraint?.minimum ?? 1)...Double(constraint?.maximum ?? 100),
-                                step: Double(constraint?.step ?? 1)
-                            )
-                                .frame(minWidth: 180)
-                            Text("\(draft.powerPercent)%")
-                                .monospacedDigit()
-                                .frame(width: 42, alignment: .trailing)
-                        }
                     }
-                }
-                if let error = validationErrors[.powerPercent] {
-                    validationLabel(error)
+                    if let error = validationErrors[.powerPercent] {
+                        validationLabel(error, for: .powerPercent)
+                    }
                 }
                 integerRow(
                     "CPU helper threads",
@@ -325,7 +327,7 @@ extension SettingsView {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                     if let error = validationErrors[.ssdStreamingEnabled] {
-                        validationLabel(error)
+                        validationLabel(error, for: .ssdStreamingEnabled)
                     }
                 }
                 if !modelProfile.supportsSSDStreaming && draft.ssdStreamingEnabled {
@@ -452,10 +454,15 @@ extension SettingsView {
                 }
             } else if modelProfile.supportsExternalMTP {
                 Section("Speculative decoding") {
-                    Picker("Mode", selection: $draft.mtpMode) {
-                        Text(MTPMode.off.title).tag(MTPMode.off)
-                        Text(MTPMode.dspark.title).tag(MTPMode.dspark)
-                        Text(MTPMode.external.title).tag(MTPMode.external)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Picker("Mode", selection: $draft.mtpMode) {
+                            Text(MTPMode.off.title).tag(MTPMode.off)
+                            Text(MTPMode.dspark.title).tag(MTPMode.dspark)
+                            Text(MTPMode.external.title).tag(MTPMode.external)
+                        }
+                        if let error = validationErrors[.mtpMode] {
+                            validationLabel(error, for: .mtpMode)
+                        }
                     }
                     if draft.mtpMode == .external {
                         pathRow("Legacy MTP model", field: .mtp, errorKey: .mtpPath, help: "A legacy DeepSeek MTP support GGUF")
@@ -479,9 +486,6 @@ extension SettingsView {
                         }
                         Toggle("Use exact sampling", isOn: $draft.mtpExactSampling)
                         Toggle("Strict DSpark mode", isOn: $draft.dsparkStrict)
-                    }
-                    if let error = validationErrors[.mtpMode] {
-                        validationLabel(error)
                     }
                 }
             } else {
@@ -671,7 +675,7 @@ extension SettingsView {
                 Text(note).font(.footnote).foregroundStyle(.secondary)
             }
             if let errorKey, let error = validationErrors[errorKey] {
-                validationLabel(error)
+                validationLabel(error, for: errorKey)
             }
         }
     }
@@ -709,7 +713,7 @@ extension SettingsView {
                     .foregroundStyle(.secondary)
             }
             if let error = validationErrors[errorKey] {
-                validationLabel(error)
+                validationLabel(error, for: errorKey)
             }
         }
     }
@@ -739,7 +743,7 @@ extension SettingsView {
                     .foregroundStyle(.secondary)
             }
             if let error = validationErrors[errorKey] {
-                validationLabel(error)
+                validationLabel(error, for: errorKey)
             }
         }
     }
@@ -765,12 +769,15 @@ extension SettingsView {
             // of a section is nothing at all. On its own line it gets the full
             // width, which these paths need anyway.
             LabeledContent(title) {
-                Button(directory ? "Choose Folder…" : "Choose…") {
-                    choosePath(field: field)
+                HStack(spacing: 8) {
+                    recentPathsMenu(title, field: field)
+                    Button(directory ? "Choose Folder…" : "Choose…") {
+                        choosePath(field: field)
+                    }
+                    .accessibilityLabel(
+                        directory ? "Choose folder for \(title)" : "Choose file for \(title)"
+                    )
                 }
-                .accessibilityLabel(
-                    directory ? "Choose folder for \(title)" : "Choose file for \(title)"
-                )
             }
             // A filled monospaced field, like the command preview in General:
             // plain text on the card reads as more label, and a path has to be
@@ -801,7 +808,7 @@ extension SettingsView {
                 }
             Text(help).font(.footnote).foregroundStyle(.secondary)
             if let errorKey, let error = validationErrors[errorKey] {
-                validationLabel(error)
+                validationLabel(error, for: errorKey)
             }
         }
     }
@@ -824,16 +831,30 @@ extension SettingsView {
             }
             Text(help).font(.footnote).foregroundStyle(.secondary)
             if let error = validationErrors[field.errorKey] {
-                validationLabel(error)
+                validationLabel(error, for: field.errorKey)
             }
         }
     }
 
+    /// A validation message under the row it is about. Every message sits in
+    /// its row's VStack, so the height it adds is its own plus that stack's
+    /// spacing, and it reports that height so the window is fitted without
+    /// it; see `fitted(_:)`.
     @ViewBuilder
-    func validationLabel(_ message: String) -> some View {
+    func validationLabel(
+        _ message: String,
+        for key: ServerConfiguration.Config.Field
+    ) -> some View {
         Label(message, systemImage: "exclamationmark.triangle.fill")
             .font(.footnote)
             .foregroundStyle(.red)
+            .onGeometryChange(for: CGFloat.self) { geometry in
+                geometry.size.height
+            } action: { height in
+                validationMessages.heights[key] = height + SettingsValidationMessages.rowSpacing
+            }
+            .onAppear { validationMessages.shown.insert(key) }
+            .onDisappear { validationMessages.shown.remove(key) }
     }
 
     var powerBinding: Binding<Double> {
@@ -928,6 +949,120 @@ extension SettingsView {
             return DS4ServerCommand.presentingPath(
                 DS4ServerCommand.fileDirectory(of: draft.tracePath)
             )
+        }
+    }
+
+    /// Recently applied paths for a row, when there is another one to switch
+    /// to. Entries are shown the way the row shows its value — `~` for home
+    /// and relative to the chosen ds4-server — so two downloads with the same
+    /// name stay apart. A file gone from a mounted disk is not offered; one on
+    /// an unmounted volume, or no longer usable, is listed disabled with the
+    /// reason. While the model is being re-read the family, and so the list,
+    /// is not settled yet, and the menu waits for it.
+    @ViewBuilder
+    func recentPathsMenu(_ title: String, field: SettingsPathField) -> some View {
+        let alternatives = recentPathAlternatives(for: field)
+        if let list = recentList(for: field), !alternatives.isEmpty {
+            Menu {
+                ForEach(alternatives, id: \.path) { entry in
+                    Button {
+                        applyPickedPath(field, path: entry.path)
+                    } label: {
+                        Text(recentPathTitle(entry, list: list))
+                    }
+                    .disabled(entry.availability != .available)
+                }
+                Divider()
+                Button("Clear Menu") {
+                    server.clearRecentSelections(field: list.field, scope: list.scope)
+                }
+            } label: {
+                Image(systemName: "clock.arrow.circlepath")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .disabled(isRefreshingDerivedState)
+            .help("Previously used paths")
+            .accessibilityLabel("Previously used paths for \(title)")
+        }
+    }
+
+    /// The history a row draws from, or nil when it has none: paths the app
+    /// names itself, the KV directory, a vision or support row before the
+    /// model's family is known, and the support row with MTP off. The support
+    /// row's list follows the mode, because DSpark and legacy MTP files are
+    /// not interchangeable.
+    func recentList(for field: SettingsPathField) -> RecentSelections.List? {
+        let scope = modelProfile.isKnown ? modelProfile.recentResourceScope : nil
+        switch field {
+        case .server:
+            return RecentSelections.List(.server)
+        case .model:
+            return RecentSelections.List(.model)
+        case .vision:
+            return RecentSelections.List(.vision, scope: scope)
+        case .mtp:
+            switch draft.mtpMode {
+            case .dspark: return RecentSelections.List(.dspark, scope: scope)
+            case .external: return RecentSelections.List(.legacyMTP, scope: scope)
+            case .off, .embedded: return nil
+            }
+        case .kvDiskDirectory, .logDirectory, .traceDirectory:
+            return nil
+        }
+    }
+
+    struct RecentPathEntry {
+        let path: String
+        let availability: ServerConfiguration.Config.RecentPathAvailability
+    }
+
+    /// Remembered paths for this row that name a different file from the one
+    /// it holds now, one entry per file, leaving out files that are gone. Two
+    /// spellings can still meet here after the history was written: relative
+    /// entries resolve against the draft's ds4-server, which may since have
+    /// changed, so the most recent spelling is the one shown.
+    func recentPathAlternatives(for field: SettingsPathField) -> [RecentPathEntry] {
+        guard let list = recentList(for: field) else { return [] }
+        let fileKey = ServerConfiguration.Config.recentFileKey(
+            field: list.field,
+            serverPath: draft.serverPath
+        )
+        var seen: Set<String> = [fileKey(storedPath(for: field))]
+        return server.recentSelections
+            .recentPaths(for: list.field, scope: list.scope)
+            .filter { seen.insert(fileKey($0)).inserted }
+            .map { path in
+                RecentPathEntry(
+                    path: path,
+                    availability: ServerConfiguration.Config.recentPathAvailability(
+                        path,
+                        field: list.field,
+                        serverPath: draft.serverPath
+                    )
+                )
+            }
+            .filter { $0.availability != .missing }
+    }
+
+    func recentPathTitle(_ entry: RecentPathEntry, list: RecentSelections.List) -> String {
+        let label: String
+        switch list.field {
+        case .server:
+            label = DS4ServerCommand.presentingPath(entry.path)
+        case .model, .vision, .dspark, .legacyMTP:
+            label = DS4ServerCommand.presentingResourcePath(
+                entry.path,
+                relativeTo: DS4ServerCommand.serverDirectory(for: draft.serverPath)
+            )
+        }
+        switch entry.availability {
+        case .available, .missing:
+            return label
+        case .volumeNotMounted:
+            return "\(label) — Volume not mounted"
+        case .unusable:
+            return "\(label) — \(list.field == .server ? "Not executable" : "Not readable")"
         }
     }
 

@@ -393,6 +393,15 @@ enum DS4ServerCommand {
         return String(configuredHost.dropFirst().dropLast())
     }
 
+    /// The configured listening address as `host:port`, for display. IPv6 is
+    /// bracketed, as in a URL, so the port stays readable. A wildcard bind is
+    /// shown as configured: that it listens on every interface is the point.
+    static func listeningAddress(host configuredHost: String, port: Int) -> String {
+        let bare = normalizedHost(configuredHost)
+        let host = bare.contains(":") ? "[\(bare)]" : bare
+        return "\(host):\(port)"
+    }
+
     /// The URL host component to probe for readiness, given the configured
     /// bind host.
     ///
