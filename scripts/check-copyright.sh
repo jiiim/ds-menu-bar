@@ -29,6 +29,9 @@ fail() {
 }
 
 # Pass 1 — SPDX headers. Compared exactly; nothing wraps these.
+# -I skips binary files: an image can carry notice-like bytes in its
+# embedded metadata, and git reports that as "Binary file <path> matches",
+# which the file:line:text parsing below would treat as a malformed notice.
 # --untracked so a contributor running this before committing sees their new
 # file; plain git grep only scans what is already staged or committed.
 while IFS= read -r entry; do
@@ -40,7 +43,7 @@ while IFS= read -r entry; do
         *)       value="unrecognised notice syntax:$value" ;;
     esac
     [ "$value" = "$notice" ] || fail "$file" "$value"
-done < <(git grep -n --untracked "$marker" -- .)
+done < <(git grep -nI --untracked "$marker" -- .)
 
 # Pass 2 — notices in prose, markup and source strings: LICENSE, the README
 # footer, the About window, Info.plist. These carry punctuation and markup
@@ -85,7 +88,7 @@ while IFS= read -r entry; do
 # clauses -- "Under (c) The rule applies" is not a notice -- so it counts only
 # when a year follows, which is how it is actually copied and how no list item
 # is ever written. A bare `(c) Jane Doe` is the one form left uncaught.
-done < <(git grep -nE --untracked \
+done < <(git grep -nIE --untracked \
              '((Copyright|Copr\.?)[[:space:]]+|©[[:space:]]*)([0-9]{4}([[:space:]]*-[[:space:]]*[0-9]{4})?[[:space:]]*)?[A-Z]|\([cC]\)[[:space:]]*[0-9]{4}([[:space:]]*-[[:space:]]*[0-9]{4})?[[:space:]]*[A-Z]' \
              -- . ':(exclude)LICENSES/')
 
