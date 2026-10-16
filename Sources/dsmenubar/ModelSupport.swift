@@ -20,6 +20,18 @@ enum DS4ModelFamily: String, Codable, Equatable {
     case unknown
 }
 
+/// Checkpoint identities ds4 pins in GGUF metadata. Main models, encoders and
+/// support files must agree on them.
+enum DS4Checkpoint {
+    static let deepSeek41VisionRevision = "df42c109f1defefcbfcedbe7d905718a12266e40"
+    static let flashVisionExperimentalRevision = "e46e16bf6035c6f317eb2ac7458eb0362926d402"
+    static let flashVisionExperimentalVariant = "vision-exp"
+    /// `deepseek4-vision.projection_length` ds4 requires of each encoder: the
+    /// language model's embedding width.
+    static let deepSeek41VisionProjection = 5_120
+    static let flashVisionExperimentalProjection = 4_096
+}
+
 struct DS4ModelProfile: Equatable {
     let family: DS4ModelFamily
     let architecture: String?
@@ -35,6 +47,10 @@ struct DS4ModelProfile: Equatable {
     /// Qwen files are true only when they contain ds4's required BF16 table.
     var hasNativeQwenNGrams: Bool?
     var hasVisualRouterBiases: Bool
+    /// True only for the main DeepSeek V4 Flash Vision Experimental GGUF.
+    /// Plain DeepSeek V4 uses the same architecture string, so this is read
+    /// from the checkpoint variant metadata instead.
+    var isFlashVisionExperimental: Bool
 
     init(
         family: DS4ModelFamily,
@@ -48,7 +64,8 @@ struct DS4ModelProfile: Equatable {
         qwenNGramRowCount: Int? = nil,
         qwenNGramRowDimension: Int? = nil,
         hasNativeQwenNGrams: Bool? = nil,
-        hasVisualRouterBiases: Bool = false
+        hasVisualRouterBiases: Bool = false,
+        isFlashVisionExperimental: Bool = false
     ) {
         self.family = family
         self.architecture = architecture
@@ -62,11 +79,15 @@ struct DS4ModelProfile: Equatable {
         self.qwenNGramRowDimension = qwenNGramRowDimension
         self.hasNativeQwenNGrams = hasNativeQwenNGrams
         self.hasVisualRouterBiases = hasVisualRouterBiases
+        self.isFlashVisionExperimental = isFlashVisionExperimental
     }
 
     var displayName: String {
         switch family {
-        case .deepSeek: return "DeepSeek V4"
+        case .deepSeek:
+            return isFlashVisionExperimental
+                ? "DeepSeek V4 Flash Vision Experimental"
+                : "DeepSeek V4"
         case .deepSeek41: return "DeepSeek V4.1 Flash"
         case .qwen38: return "Qwen3.8 Flash Next"
         case .glm52: return "GLM 5.2 (full)"
@@ -97,12 +118,18 @@ struct DS4ModelProfile: Equatable {
             return false
         }
     }
-    var supportsExternalMTP: Bool { family == .deepSeek }
+    /// ds4 accepts a support GGUF only when its checkpoint matches the main
+    /// model. The only Vision Experimental support file published is DSpark,
+    /// so Legacy MTP is not offered for that checkpoint.
+    var supportsExternalMTP: Bool { family == .deepSeek && !isFlashVisionExperimental }
     var supportsDSpark: Bool { family == .deepSeek }
     var supportsBatchedEmbeddedMTP: Bool {
         family == .qwen38 && supportsEmbeddedMTP
     }
-    var supportsVision: Bool { family == .glm53Flash || family == .deepSeek41 || family == .qwen38 }
+    var supportsVision: Bool {
+        family == .glm53Flash || family == .deepSeek41 || family == .qwen38 ||
+            isFlashVisionExperimental
+    }
     var supportsSSDStreaming: Bool { family != .qwen38 }
     var supportsManualPrefill: Bool { family == .deepSeek || family == .qwen38 || family == .unknown }
     var requiresFullPower: Bool {
@@ -136,11 +163,14 @@ struct DS4ModelProfile: Equatable {
     }
     var isKnown: Bool { family != .unknown && family != .supportModel }
     var isSupportArtifact: Bool { family == .supportModel }
-    /// Identity shared by resources that are interchangeable across models:
-    /// one family. Vision encoders and support GGUFs are chosen per family —
-    /// `DS4VisionProfile.isCompatible(with:)` is a family rule — so a recent
-    /// list keyed by this value follows the file rather than the quant.
-    var recentResourceScope: String { family.rawValue }
+    /// Identity shared by resources that are interchangeable across models.
+    /// Most resources are chosen by family, but DeepSeek Flash Vision
+    /// Experimental needs its own checkpoint-matched encoders and support
+    /// files. A recent list keyed by this value follows the file rather than
+    /// the quant.
+    var recentResourceScope: String {
+        isFlashVisionExperimental ? "deepSeekFlashVisionExperimental" : family.rawValue
+    }
 
     static let unknown = Self(family: .unknown, architecture: nil)
 
@@ -482,6 +512,20 @@ enum DS4SupportKind: Equatable {
 struct DS4SupportProfile: Equatable {
     let kind: DS4SupportKind
     let architecture: String?
+    let checkpointVariant: String?
+    let sourceRevision: String?
+
+    init(
+        kind: DS4SupportKind,
+        architecture: String?,
+        checkpointVariant: String? = nil,
+        sourceRevision: String? = nil
+    ) {
+        self.kind = kind
+        self.architecture = architecture
+        self.checkpointVariant = checkpointVariant
+        self.sourceRevision = sourceRevision
+    }
 
     static let unavailable = Self(kind: .unavailable, architecture: nil)
     static let unrecognized = Self(kind: .unrecognized, architecture: nil)
@@ -489,11 +533,28 @@ struct DS4SupportProfile: Equatable {
     var isUsable: Bool {
         kind == .legacyMTP || kind == .dspark
     }
+
+    /// True for a support GGUF built for the Vision Experimental checkpoint.
+    var isFlashVisionExperimental: Bool {
+        checkpointVariant == DS4Checkpoint.flashVisionExperimentalVariant
+    }
+
+    /// Mirrors ds4's support_model_checkpoint_compatible. A Vision
+    /// Experimental main model needs a support GGUF tagged with its variant
+    /// and pinned revision; every other main model rejects such a file.
+    func isCompatible(with model: DS4ModelProfile) -> Bool {
+        if model.isFlashVisionExperimental {
+            return isFlashVisionExperimental &&
+                sourceRevision == DS4Checkpoint.flashVisionExperimentalRevision
+        }
+        return !isFlashVisionExperimental
+    }
 }
 
 enum DS4VisionKind: Equatable {
     case glm53Flash
     case deepSeek41
+    case deepSeekVision
     case qwen38
     case incompatible
     case unavailable
@@ -508,8 +569,12 @@ struct DS4VisionProfile: Equatable {
 
     func isCompatible(with model: DS4ModelProfile) -> Bool {
         switch (kind, model.family) {
-        case (.glm53Flash, .glm53Flash), (.deepSeek41, .deepSeek41):
+        case (.glm53Flash, .glm53Flash):
             return true
+        case (.deepSeek41, .deepSeek41):
+            return projectionDimension == DS4Checkpoint.deepSeek41VisionProjection
+        case (.deepSeekVision, _) where model.isFlashVisionExperimental:
+            return projectionDimension == DS4Checkpoint.flashVisionExperimentalProjection
         case (.qwen38, .qwen38):
             guard let projectionDimension, let embedding = model.embeddingLength else { return true }
             return projectionDimension == embedding
@@ -663,6 +728,16 @@ private final class GGUFReader {
         }
         profile.hasVisualRouterBiases = profile.family == .deepSeek41 &&
             profile.blockCount.map { snapshot.visualRouterLayers.isSuperset(of: 0..<$0) } == true
+        if profile.family == .deepSeek {
+            let variant = snapshot.string("deepseek4.checkpoint_variant")?
+                .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let revision = snapshot.string("general.source.revision")?
+                .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            profile.isFlashVisionExperimental =
+                variant == DS4Checkpoint.flashVisionExperimentalVariant &&
+                revision == DS4Checkpoint.flashVisionExperimentalRevision &&
+                snapshot.bool("deepseek4.vision.sidecar_required") == true
+        }
         return profile
     }
 
@@ -676,11 +751,22 @@ private final class GGUFReader {
         case "deepseek4-vision":
             let variant = snapshot.string("deepseek4-vision.checkpoint_variant")?.lowercased()
             let revision = snapshot.string("general.source.revision")?.lowercased()
-            guard variant == "v4.1-flash",
-                  revision == "df42c109f1defefcbfcedbe7d905718a12266e40" else {
+            switch (variant, revision) {
+            case ("v4.1-flash", DS4Checkpoint.deepSeek41VisionRevision):
+                return DS4VisionProfile(
+                    kind: .deepSeek41,
+                    architecture: architecture,
+                    projectionDimension: snapshot.integer("deepseek4-vision.projection_length")
+                )
+            case (DS4Checkpoint.flashVisionExperimentalVariant, DS4Checkpoint.flashVisionExperimentalRevision):
+                return DS4VisionProfile(
+                    kind: .deepSeekVision,
+                    architecture: architecture,
+                    projectionDimension: snapshot.integer("deepseek4-vision.projection_length")
+                )
+            default:
                 return DS4VisionProfile(kind: .incompatible, architecture: architecture, projectionDimension: nil)
             }
-            return DS4VisionProfile(kind: .deepSeek41, architecture: architecture, projectionDimension: 5_120)
         case "clip":
             guard snapshot.string("clip.projector_type")?.lowercased() == "qwen3vl_merger" else {
                 return DS4VisionProfile(kind: .incompatible, architecture: architecture, projectionDimension: nil)
@@ -698,6 +784,7 @@ private final class GGUFReader {
     private struct Snapshot {
         var strings: [String: String] = [:]
         var integers: [String: Int] = [:]
+        var booleans: [String: Bool] = [:]
         var qwenNGramDimensions: [UInt64]?
         var qwenNGramType: UInt32?
         var visualRouterLayers: Set<Int> = []
@@ -707,6 +794,7 @@ private final class GGUFReader {
         }
 
         func integer(_ key: String) -> Int? { integers[key] }
+        func bool(_ key: String) -> Bool? { booleans[key] }
         func positiveInteger(_ key: String) -> Int? {
             guard let value = integers[key], value > 0 else { return nil }
             return value
@@ -752,6 +840,8 @@ private final class GGUFReader {
                 case .int64:
                     let value = Int64(bitPattern: try readUInt64())
                     if value >= 0 { snapshot.integers[key] = Int(value) }
+                case .bool:
+                    snapshot.booleans[key] = try readData(length: 1)[0] != 0
                 default:
                     try skipValue(type: type, depth: 0)
                 }
@@ -785,7 +875,9 @@ private final class GGUFReader {
     private static func profileMetadataKey(_ key: String) -> Bool {
         let exact: Set<String> = [
             "general.architecture", "general.version", "general.name", "general.basename",
-            "general.source.revision", "deepseek4-vision.checkpoint_variant",
+            "general.source.revision", "deepseek4.checkpoint_variant",
+            "deepseek4.vision.sidecar_required", "deepseek4-vision.checkpoint_variant",
+            "deepseek4-vision.projection_length",
             "clip.projector_type", "clip.vision.projection_dim",
             "qwen4exp.ple.row_count", "qwen4exp.embedding_length_per_layer_input"
         ]
@@ -828,13 +920,20 @@ private final class GGUFReader {
         guard metadataCount <= 1_000_000 else { throw ReaderError.invalidFile }
 
         var architecture: String?
+        var checkpointVariant: String?
+        var sourceRevision: String?
         for _ in 0..<metadataCount {
             let key = try readString()
             let type = try readUInt32()
-            if key == "general.architecture" && type == GGUFValueType.string.rawValue {
-                architecture = try readString()
-            } else {
+            guard type == GGUFValueType.string.rawValue else {
                 try skipValue(type: type, depth: 0)
+                continue
+            }
+            switch key {
+            case "general.architecture": architecture = try readString()
+            case "deepseek4.checkpoint_variant": checkpointVariant = try readString()
+            case "general.source.revision": sourceRevision = try readString()
+            default: try skipValue(type: type, depth: 0)
             }
         }
 
@@ -863,7 +962,12 @@ private final class GGUFReader {
         }
 
         if dsparkStages.count >= 3 && hasMainProjection && hasMarkovHead && hasConfidenceHead {
-            return DS4SupportProfile(kind: .dspark, architecture: architecture)
+            return DS4SupportProfile(
+                kind: .dspark,
+                architecture: architecture,
+                checkpointVariant: checkpointVariant,
+                sourceRevision: sourceRevision
+            )
         }
 
         let legacySignature: Set<String> = [
@@ -872,7 +976,12 @@ private final class GGUFReader {
             "mtp.0.hc_head_base.weight"
         ]
         if legacySignature.isSubset(of: tensorNames) {
-            return DS4SupportProfile(kind: .legacyMTP, architecture: architecture)
+            return DS4SupportProfile(
+                kind: .legacyMTP,
+                architecture: architecture,
+                checkpointVariant: checkpointVariant,
+                sourceRevision: sourceRevision
+            )
         }
 
         return DS4SupportProfile(kind: .notSupportModel, architecture: architecture)

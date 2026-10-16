@@ -198,6 +198,9 @@ final class ProcessManager {
                         : "Selected MTP model is not a legacy MTP support GGUF"
                 )
             }
+            guard detected.isCompatible(with: modelProfile) else {
+                return failLaunch("Selected MTP model does not match \(modelProfile.displayName) at \(resolvedMTPPath)")
+            }
         }
         if modelProfile.supportsVision && configuration.visionEnabled &&
             !configuration.visionPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

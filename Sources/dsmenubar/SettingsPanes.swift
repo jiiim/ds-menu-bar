@@ -452,13 +452,15 @@ extension SettingsView {
                         Toggle("Use exact sampling", isOn: $draft.mtpExactSampling)
                     }
                 }
-            } else if modelProfile.supportsExternalMTP {
+            } else if modelProfile.supportsExternalMTP || modelProfile.supportsDSpark {
                 Section("Speculative decoding") {
                     VStack(alignment: .leading, spacing: 4) {
                         Picker("Mode", selection: $draft.mtpMode) {
                             Text(MTPMode.off.title).tag(MTPMode.off)
                             Text(MTPMode.dspark.title).tag(MTPMode.dspark)
-                            Text(MTPMode.external.title).tag(MTPMode.external)
+                            if modelProfile.supportsExternalMTP || draft.mtpMode == .external {
+                                Text(MTPMode.external.title).tag(MTPMode.external)
+                            }
                         }
                         if let error = validationErrors[.mtpMode] {
                             validationLabel(error, for: .mtpMode)
@@ -865,6 +867,9 @@ extension SettingsView {
     }
 
     var visionHelp: String {
+        if modelProfile.isFlashVisionExperimental {
+            return "Matching DeepSeek V4 Flash Vision Experimental encoder GGUF; required when enabled"
+        }
         switch modelProfile.family {
         case .glm53Flash: return "Optional GLM 5.3 Flash vision encoder GGUF; required when enabled"
         case .deepSeek41: return "Matching DeepSeek V4.1 Flash vision encoder GGUF; required when enabled"
@@ -1072,6 +1077,14 @@ extension SettingsView {
             LabeledContent("Detected support type") {
                 Text(supportProfile.kind.title)
                     .foregroundStyle(supportProfile.kind == expected ? Color.secondary : Color.red)
+            }
+            if supportProfile.isUsable {
+                LabeledContent("Checkpoint") {
+                    Text(supportProfile.isFlashVisionExperimental
+                         ? "DeepSeek V4 Flash Vision Experimental"
+                         : "DeepSeek V4 Flash")
+                        .foregroundStyle(supportProfile.isCompatible(with: modelProfile) ? Color.secondary : Color.red)
+                }
             }
         }
     }

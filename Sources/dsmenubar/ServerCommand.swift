@@ -170,13 +170,15 @@ enum DS4ServerCommand {
             args.append("--mtp")
             if configuration.mtpTiming { args.append("--mtp-timing") }
             if configuration.mtpExactSampling { args.append("--mtp-exact-sampling") }
-        case .external where modelProfile.supportsExternalMTP && supportProfile.kind == .legacyMTP:
+        case .external where modelProfile.supportsExternalMTP && supportProfile.kind == .legacyMTP &&
+            supportProfile.isCompatible(with: modelProfile):
             args += [
                 "--mtp-model", resolvedMTPPath,
                 "--mtp-draft", "\(configuration.mtpDraft)",
                 "--mtp-margin", format(configuration.mtpMargin)
             ]
-        case .dspark where modelProfile.supportsDSpark && supportProfile.kind == .dspark:
+        case .dspark where modelProfile.supportsDSpark && supportProfile.kind == .dspark &&
+            supportProfile.isCompatible(with: modelProfile):
             args += ["--mtp-model", resolvedMTPPath, "--dspark"]
             if let confidence = configuration.dsparkConfidence {
                 args += ["--dspark-confidence", format(confidence)]

@@ -132,6 +132,31 @@ final class RecentSelectionsTests: XCTestCase {
         )
     }
 
+    func testFlashVisionExperimentalKeepsCheckpointSpecificResourcesSeparate() {
+        let flash = DS4ModelProfile.from(architecture: "deepseek4")
+        let vision = DS4ModelProfile(
+            family: .deepSeek,
+            architecture: "deepseek4",
+            isFlashVisionExperimental: true
+        )
+        XCTAssertNotEqual(flash.recentResourceScope, vision.recentResourceScope)
+
+        var recents = RecentSelections()
+        recents.record(
+            "/vision/flash-vision-exp.gguf",
+            for: .vision,
+            scope: vision.recentResourceScope
+        )
+        XCTAssertEqual(
+            recents.recentPaths(for: .vision, scope: flash.recentResourceScope),
+            []
+        )
+        XCTAssertEqual(
+            recents.recentPaths(for: .vision, scope: vision.recentResourceScope),
+            ["/vision/flash-vision-exp.gguf"]
+        )
+    }
+
     func testEmptyPathsAreIgnored() {
         var recents = RecentSelections()
         recents.record("   ", for: .model)

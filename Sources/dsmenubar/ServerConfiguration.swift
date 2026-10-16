@@ -850,7 +850,9 @@ extension ServerConfiguration.Config {
                     errors[.mtpMode] = "The selected model does not contain embedded MTP weights"
                 }
             case .external:
-                if !modelProfile.supportsExternalMTP {
+                if modelProfile.isFlashVisionExperimental {
+                    errors[.mtpMode] = "Legacy MTP has no support GGUF for \(modelProfile.displayName). Use DSpark with its matching support GGUF."
+                } else if !modelProfile.supportsExternalMTP {
                     errors[.mtpMode] = "Legacy MTP is available only for DeepSeek models"
                 } else {
                     nonEmpty(mtpPath, field: .mtpPath, message: "Choose an MTP model file")
@@ -860,7 +862,11 @@ extension ServerConfiguration.Config {
                             errors[.mtpPath] = "This is a DSpark support GGUF. Select DSpark mode, or choose a legacy MTP support GGUF for Legacy MTP."
                         case .notSupportModel, .unrecognized:
                             errors[.mtpPath] = "Choose a legacy MTP support GGUF"
-                        case .legacyMTP, .unavailable:
+                        case .legacyMTP:
+                            if !supportProfile.isCompatible(with: modelProfile) {
+                                errors[.mtpPath] = "This legacy MTP support GGUF is built for the DeepSeek V4 Flash Vision Experimental checkpoint. Choose the Flash 0731 legacy MTP GGUF."
+                            }
+                        case .unavailable:
                             break
                         }
                     }
@@ -880,7 +886,13 @@ extension ServerConfiguration.Config {
                             errors[.mtpPath] = "This is a legacy MTP support GGUF. Choose a DSpark support GGUF, or select Legacy MTP mode to use this file."
                         case .notSupportModel, .unrecognized:
                             errors[.mtpPath] = "Choose a DSpark support GGUF"
-                        case .dspark, .unavailable:
+                        case .dspark:
+                            if !supportProfile.isCompatible(with: modelProfile) {
+                                errors[.mtpPath] = modelProfile.isFlashVisionExperimental
+                                    ? "This DSpark support GGUF is not built for \(modelProfile.displayName). Choose the Vision Experimental DSpark support GGUF."
+                                    : "This DSpark support GGUF is built for the DeepSeek V4 Flash Vision Experimental checkpoint. Choose the Flash 0731 DSpark support GGUF."
+                            }
+                        case .unavailable:
                             break
                         }
                     }
@@ -1079,7 +1091,10 @@ extension ServerConfiguration.Config {
     private mutating func repairMTPMode(for profile: DS4ModelProfile) {
         switch profile.family {
         case .deepSeek:
-            if mtpMode == .embedded { mtpMode = .off }
+            if mtpMode == .embedded ||
+                (mtpMode == .external && !profile.supportsExternalMTP) {
+                mtpMode = .off
+            }
         case .qwen38, .glm52, .glm53Full, .glm53Flash, .glm5Full:
             if mtpMode == .external || mtpMode == .dspark ||
                 (mtpMode == .embedded && !profile.supportsEmbeddedMTP) {

@@ -202,11 +202,315 @@ final class ModelSupportTests: XCTestCase {
             stringMetadata: [
                 "deepseek4-vision.checkpoint_variant": "v4.1-flash",
                 "general.source.revision": "df42c109f1defefcbfcedbe7d905718a12266e40"
-            ]
+            ],
+            uint32Metadata: ["deepseek4-vision.projection_length": 5_120]
         ).write(to: visionURL)
         defer { try? FileManager.default.removeItem(at: visionURL) }
         let profile = GGUFModelInspector.visionProfile(for: visionURL.path, relativeTo: nil)
         XCTAssertEqual(profile.kind, .deepSeek41)
+        XCTAssertEqual(profile.projectionDimension, 5_120)
+        XCTAssertTrue(profile.isCompatible(with: DS4ModelProfile(family: .deepSeek41, architecture: "deepseek4")))
+    }
+
+    func testDeepSeekVisionEncodersRequireTheirProjectionLength() throws {
+        let cases: [(String, String, DS4ModelProfile, [String: UInt32])] = [
+            (
+                "v4.1-flash", "df42c109f1defefcbfcedbe7d905718a12266e40",
+                DS4ModelProfile(family: .deepSeek41, architecture: "deepseek4"),
+                ["deepseek4-vision.projection_length": 4_096]
+            ),
+            (
+                "v4.1-flash", "df42c109f1defefcbfcedbe7d905718a12266e40",
+                DS4ModelProfile(family: .deepSeek41, architecture: "deepseek4"),
+                [:]
+            ),
+            (
+                "vision-exp", "e46e16bf6035c6f317eb2ac7458eb0362926d402",
+                DS4ModelProfile(family: .deepSeek, architecture: "deepseek4", isFlashVisionExperimental: true),
+                ["deepseek4-vision.projection_length": 5_120]
+            ),
+            (
+                "vision-exp", "e46e16bf6035c6f317eb2ac7458eb0362926d402",
+                DS4ModelProfile(family: .deepSeek, architecture: "deepseek4", isFlashVisionExperimental: true),
+                [:]
+            )
+        ]
+        for (variant, revision, model, integers) in cases {
+            let url = temporaryURL()
+            try makeGGUF(
+                architecture: "deepseek4-vision",
+                stringMetadata: [
+                    "deepseek4-vision.checkpoint_variant": variant,
+                    "general.source.revision": revision
+                ],
+                uint32Metadata: integers
+            ).write(to: url)
+            defer { try? FileManager.default.removeItem(at: url) }
+
+            let vision = GGUFModelInspector.visionProfile(for: url.path, relativeTo: nil)
+            XCTAssertFalse(vision.isCompatible(with: model), "\(variant) \(integers)")
+
+            var config = ServerConfiguration.Config(visionPath: url.path)
+            config.visionEnabled = true
+            XCTAssertNotNil(
+                config.validationErrors(modelProfile: model, visionProfile: vision)[.visionPath],
+                "\(variant) \(integers)"
+            )
+        }
+    }
+
+    func testDeepSeekFlashVisionExperimentalIsDistinguishedFromFlash0731() throws {
+        let visionURL = temporaryURL()
+        try makeGGUF(
+            architecture: "deepseek4",
+            stringMetadata: [
+                "deepseek4.checkpoint_variant": "vision-exp",
+                "general.source.revision": "e46e16bf6035c6f317eb2ac7458eb0362926d402"
+            ],
+            boolMetadata: ["deepseek4.vision.sidecar_required": true]
+        ).write(to: visionURL)
+        defer { try? FileManager.default.removeItem(at: visionURL) }
+
+        let profile = try GGUFModelInspector.profile(at: visionURL.path)
+        XCTAssertEqual(profile.family, .deepSeek)
+        XCTAssertTrue(profile.isFlashVisionExperimental)
+        XCTAssertTrue(profile.supportsVision)
+        XCTAssertEqual(profile.displayName, "DeepSeek V4 Flash Vision Experimental")
+
+        let plainURL = temporaryURL()
+        try makeGGUF(architecture: "deepseek4").write(to: plainURL)
+        defer { try? FileManager.default.removeItem(at: plainURL) }
+
+        let plain = try GGUFModelInspector.profile(at: plainURL.path)
+        XCTAssertFalse(plain.isFlashVisionExperimental)
+        XCTAssertFalse(plain.supportsVision)
+        XCTAssertEqual(plain.displayName, "DeepSeek V4")
+    }
+
+    func testDeepSeekFlashVisionExperimentalRequiresPinnedMainMetadata() throws {
+        let cases: [(String, String, Bool)] = [
+            (
+                "flash-0731",
+                "e46e16bf6035c6f317eb2ac7458eb0362926d402",
+                true
+            ),
+            (
+                "vision-exp",
+                "0000000000000000000000000000000000000000",
+                true
+            ),
+            (
+                "vision-exp",
+                "e46e16bf6035c6f317eb2ac7458eb0362926d402",
+                false
+            )
+        ]
+
+        for (variant, revision, sidecarRequired) in cases {
+            let url = temporaryURL()
+            try makeGGUF(
+                architecture: "deepseek4",
+                stringMetadata: [
+                    "deepseek4.checkpoint_variant": variant,
+                    "general.source.revision": revision
+                ],
+                boolMetadata: ["deepseek4.vision.sidecar_required": sidecarRequired]
+            ).write(to: url)
+            defer { try? FileManager.default.removeItem(at: url) }
+
+            XCTAssertFalse(
+                try GGUFModelInspector.profile(at: url.path).isFlashVisionExperimental,
+                "\(variant), \(revision), \(sidecarRequired)"
+            )
+        }
+    }
+
+    func testDeepSeekFlashVisionExperimentalEncoderPairing() throws {
+        let model = DS4ModelProfile(
+            family: .deepSeek,
+            architecture: "deepseek4",
+            isFlashVisionExperimental: true
+        )
+        let plain = DS4ModelProfile.from(architecture: "deepseek4")
+
+        let visionURL = temporaryURL()
+        try makeGGUF(
+            architecture: "deepseek4-vision",
+            stringMetadata: [
+                "deepseek4-vision.checkpoint_variant": "vision-exp",
+                "general.source.revision": "e46e16bf6035c6f317eb2ac7458eb0362926d402"
+            ],
+            uint32Metadata: ["deepseek4-vision.projection_length": 4_096]
+        ).write(to: visionURL)
+        defer { try? FileManager.default.removeItem(at: visionURL) }
+
+        let vision = GGUFModelInspector.visionProfile(for: visionURL.path, relativeTo: nil)
+        XCTAssertEqual(vision.kind, .deepSeekVision)
+        XCTAssertEqual(vision.projectionDimension, 4_096)
+        XCTAssertTrue(vision.isCompatible(with: model))
+        XCTAssertFalse(vision.isCompatible(with: plain))
+
+        var config = ServerConfiguration.Config(visionPath: visionURL.path)
+        config.visionEnabled = true
+        XCTAssertNil(config.validationErrors(modelProfile: model, visionProfile: vision)[.visionPath])
+
+        let args = DS4ServerCommand.arguments(
+            configuration: config,
+            resolvedModelPath: "/tmp/vision-exp.gguf",
+            resolvedMTPPath: "",
+            resolvedVisionPath: visionURL.path,
+            modelProfile: model,
+            visionProfile: vision
+        )
+        XCTAssertTrue(args.contains("--vision"))
+        XCTAssertTrue(args.contains(visionURL.path))
+    }
+
+    private static let visionExpRevision = "e46e16bf6035c6f317eb2ac7458eb0362926d402"
+    private static let dsparkTensors = [
+        "mtp.0.main_proj.weight",
+        "mtp.0.block.weight",
+        "mtp.1.block.weight",
+        "mtp.2.block.weight",
+        "mtp.2.markov_head.markov_w1.weight",
+        "mtp.2.confidence_head.proj.weight"
+    ]
+
+    func testSupportProfileReadsCheckpointMetadata() throws {
+        let taggedURL = temporaryURL()
+        try makeGGUF(
+            architecture: "deepseek4-dspark",
+            tensorNames: Self.dsparkTensors,
+            stringMetadata: [
+                "deepseek4.checkpoint_variant": "vision-exp",
+                "general.source.revision": Self.visionExpRevision
+            ]
+        ).write(to: taggedURL)
+        defer { try? FileManager.default.removeItem(at: taggedURL) }
+
+        let plainURL = temporaryURL()
+        try makeGGUF(architecture: "deepseek4-dspark", tensorNames: Self.dsparkTensors)
+            .write(to: plainURL)
+        defer { try? FileManager.default.removeItem(at: plainURL) }
+
+        let tagged = try GGUFModelInspector.supportProfile(at: taggedURL.path)
+        XCTAssertEqual(tagged.kind, .dspark)
+        XCTAssertEqual(tagged.checkpointVariant, "vision-exp")
+        XCTAssertEqual(tagged.sourceRevision, Self.visionExpRevision)
+        XCTAssertTrue(tagged.isFlashVisionExperimental)
+
+        let plain = try GGUFModelInspector.supportProfile(at: plainURL.path)
+        XCTAssertEqual(plain.kind, .dspark)
+        XCTAssertNil(plain.checkpointVariant)
+        XCTAssertFalse(plain.isFlashVisionExperimental)
+    }
+
+    func testSupportCheckpointMustMatchTheMainModel() {
+        let flash = DS4ModelProfile.from(architecture: "deepseek4")
+        let vision = DS4ModelProfile(
+            family: .deepSeek,
+            architecture: "deepseek4",
+            isFlashVisionExperimental: true
+        )
+        func support(_ kind: DS4SupportKind, variant: String?, revision: String?) -> DS4SupportProfile {
+            DS4SupportProfile(
+                kind: kind,
+                architecture: nil,
+                checkpointVariant: variant,
+                sourceRevision: revision
+            )
+        }
+
+        for kind in [DS4SupportKind.dspark, .legacyMTP] {
+            let untagged = support(kind, variant: nil, revision: nil)
+            let tagged = support(kind, variant: "vision-exp", revision: Self.visionExpRevision)
+            let wrongRevision = support(
+                kind,
+                variant: "vision-exp",
+                revision: "0000000000000000000000000000000000000000"
+            )
+            XCTAssertTrue(untagged.isCompatible(with: flash))
+            XCTAssertFalse(untagged.isCompatible(with: vision))
+            XCTAssertFalse(tagged.isCompatible(with: flash))
+            XCTAssertTrue(tagged.isCompatible(with: vision))
+            XCTAssertFalse(wrongRevision.isCompatible(with: vision))
+            XCTAssertFalse(wrongRevision.isCompatible(with: flash))
+        }
+    }
+
+    func testSupportValidationAndCommandEnforceTheCheckpoint() {
+        let flash = DS4ModelProfile.from(architecture: "deepseek4")
+        let vision = DS4ModelProfile(
+            family: .deepSeek,
+            architecture: "deepseek4",
+            isFlashVisionExperimental: true
+        )
+        let flashDSpark = DS4SupportProfile(kind: .dspark, architecture: "deepseek4-dspark")
+        let visionDSpark = DS4SupportProfile(
+            kind: .dspark,
+            architecture: "deepseek4-dspark",
+            checkpointVariant: "vision-exp",
+            sourceRevision: Self.visionExpRevision
+        )
+        let visionLegacy = DS4SupportProfile(
+            kind: .legacyMTP,
+            architecture: "deepseek4_mtp_support",
+            checkpointVariant: "vision-exp",
+            sourceRevision: Self.visionExpRevision
+        )
+        let flashLegacy = DS4SupportProfile(kind: .legacyMTP, architecture: "deepseek4_mtp_support")
+
+        var config = ServerConfiguration.Config()
+        config.mtpMode = .dspark
+        XCTAssertNil(config.validationErrors(modelProfile: flash, supportProfile: flashDSpark)[.mtpPath])
+        XCTAssertNil(config.validationErrors(modelProfile: vision, supportProfile: visionDSpark)[.mtpPath])
+        XCTAssertNotNil(config.validationErrors(modelProfile: vision, supportProfile: flashDSpark)[.mtpPath])
+        XCTAssertNotNil(config.validationErrors(modelProfile: flash, supportProfile: visionDSpark)[.mtpPath])
+
+        func arguments(_ model: DS4ModelProfile, _ support: DS4SupportProfile) -> [String] {
+            DS4ServerCommand.arguments(
+                configuration: config,
+                resolvedModelPath: "/tmp/main.gguf",
+                resolvedMTPPath: "/tmp/support.gguf",
+                modelProfile: model,
+                supportProfile: support
+            )
+        }
+        XCTAssertTrue(arguments(vision, visionDSpark).contains("--dspark"))
+        XCTAssertFalse(arguments(vision, flashDSpark).contains("--mtp-model"))
+        XCTAssertFalse(arguments(flash, visionDSpark).contains("--mtp-model"))
+
+        config.mtpMode = .external
+        XCTAssertNil(config.validationErrors(modelProfile: flash, supportProfile: flashLegacy)[.mtpPath])
+        XCTAssertNotNil(config.validationErrors(modelProfile: flash, supportProfile: visionLegacy)[.mtpPath])
+        XCTAssertFalse(arguments(flash, visionLegacy).contains("--mtp-model"))
+    }
+
+    func testLegacyMTPIsNotOfferedForFlashVisionExperimental() {
+        let vision = DS4ModelProfile(
+            family: .deepSeek,
+            architecture: "deepseek4",
+            isFlashVisionExperimental: true
+        )
+        XCTAssertFalse(vision.supportsExternalMTP)
+        XCTAssertTrue(vision.supportsDSpark)
+
+        var config = ServerConfiguration.Config()
+        config.mtpMode = .external
+        XCTAssertNotNil(config.validationErrors(modelProfile: vision)[.mtpMode])
+        let args = DS4ServerCommand.arguments(
+            configuration: config,
+            resolvedModelPath: "/tmp/main.gguf",
+            resolvedMTPPath: "/tmp/legacy.gguf",
+            modelProfile: vision,
+            supportProfile: DS4SupportProfile(
+                kind: .legacyMTP,
+                architecture: "deepseek4_mtp_support",
+                checkpointVariant: "vision-exp",
+                sourceRevision: Self.visionExpRevision
+            )
+        )
+        XCTAssertFalse(args.contains("--mtp-model"))
     }
 
     func testAuxiliaryGGUFsAreRejectedAsMainModels() throws {
@@ -345,6 +649,33 @@ final class ModelSupportTests: XCTestCase {
             DS4TuningProfile(configuration: glmConfig)
         let selectedDeepSeek = glmConfig.selectingModel(path: "/tmp/deepseek.gguf", profile: deepSeek)
         XCTAssertEqual(selectedDeepSeek.mtpMode, .off)
+    }
+
+    func testSelectingFlashVisionExperimentalRepairsLegacyMTPMode() {
+        let vision = DS4ModelProfile(
+            family: .deepSeek,
+            architecture: "deepseek4",
+            isFlashVisionExperimental: true
+        )
+        var config = ServerConfiguration.Config(modelPath: "/tmp/deepseek.gguf")
+        let key = ServerConfiguration.Config.modelKey(
+            for: "/tmp/vision.gguf",
+            serverPath: config.serverPath
+        )
+
+        config.mtpMode = .external
+        config.modelProfiles[key] = DS4TuningProfile(configuration: config)
+        XCTAssertEqual(
+            config.selectingModel(path: "/tmp/vision.gguf", profile: vision).mtpMode,
+            .off
+        )
+
+        config.mtpMode = .dspark
+        config.modelProfiles[key] = DS4TuningProfile(configuration: config)
+        XCTAssertEqual(
+            config.selectingModel(path: "/tmp/vision.gguf", profile: vision).mtpMode,
+            .dspark
+        )
     }
 
     func testRestoreTuningDefaultsOnlyResetsActiveModelProfile() {
@@ -972,13 +1303,17 @@ final class ModelSupportTests: XCTestCase {
         tensorNames: [String] = [],
         stringMetadata: [String: String] = [:],
         uint32Metadata: [String: UInt32] = [:],
+        boolMetadata: [String: Bool] = [:],
         tensorDimensions: [String: [UInt64]] = [:],
         tensorTypes: [String: UInt32] = [:]
     ) -> Data {
         var data = Data([0x47, 0x47, 0x55, 0x46]) // GGUF
         append(UInt32(3), to: &data)
         append(UInt64(tensorNames.count + tensorDimensions.count), to: &data)
-        append(UInt64(1 + stringMetadata.count + uint32Metadata.count), to: &data)
+        append(
+            UInt64(1 + stringMetadata.count + uint32Metadata.count + boolMetadata.count),
+            to: &data
+        )
         append(utf8: "general.architecture", to: &data)
         append(UInt32(8), to: &data) // GGUF_TYPE_STRING
         append(utf8: architecture, to: &data)
@@ -991,6 +1326,11 @@ final class ModelSupportTests: XCTestCase {
             append(utf8: key, to: &data)
             append(UInt32(4), to: &data)
             append(value, to: &data)
+        }
+        for (key, value) in boolMetadata {
+            append(utf8: key, to: &data)
+            append(UInt32(7), to: &data) // GGUF_TYPE_BOOL
+            data.append(value ? 1 : 0)
         }
         for name in tensorNames {
             append(utf8: name, to: &data)
