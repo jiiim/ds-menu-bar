@@ -295,8 +295,8 @@ DwarfStar project. Four points for the star were chosen in reference to the `4`
 in `ds4-server` and the original `ds4.c` name of the DwarfStar project. For
 the app icon, the four pointed star sits high on a purple background, like
 a star in the evening sky. In the menu bar, when `ds4-server` is running, the
-star is solid. When `ds4-server` is not running, the star is just an outline.
-While `ds4-server` is starting, the star oscillates between solid and outline.
+star is solid. When `ds4-server` is not running, the star is an outline. While
+`ds4-server` is starting, the star alternates between solid and outline forms.
 
 ## License
 
