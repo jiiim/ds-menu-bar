@@ -651,6 +651,95 @@ final class ModelSupportTests: XCTestCase {
         )
     }
 
+    private static let pro = DS4ModelProfile(
+        family: .deepSeek,
+        architecture: "deepseek4",
+        blockCount: 61,
+        embeddingLength: 7_168
+    )
+
+    func testProIsRecognizedByItsShape() throws {
+        let url = temporaryURL()
+        try makeGGUF(
+            architecture: "deepseek4",
+            uint32Metadata: [
+                "deepseek4.block_count": 61,
+                "deepseek4.embedding_length": 7_168
+            ]
+        ).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let pro = GGUFModelInspector.profile(for: url.path)
+        XCTAssertTrue(pro.isPro)
+        XCTAssertEqual(pro.displayName, "DeepSeek V4 Pro")
+
+        let flash = DS4ModelProfile(
+            family: .deepSeek,
+            architecture: "deepseek4",
+            blockCount: 43,
+            embeddingLength: 4_096
+        )
+        XCTAssertFalse(flash.isPro)
+        XCTAssertEqual(flash.displayName, "DeepSeek V4")
+        XCTAssertTrue(flash.supportsDSpark)
+        XCTAssertTrue(flash.supportsExternalMTP)
+    }
+
+    func testProOffersNoSupportFileModes() {
+        let pro = Self.pro
+        XCTAssertFalse(pro.supportsDSpark)
+        XCTAssertFalse(pro.supportsExternalMTP)
+
+        var config = ServerConfiguration.Config()
+        func arguments(_ support: DS4SupportProfile) -> [String] {
+            DS4ServerCommand.arguments(
+                configuration: config,
+                resolvedModelPath: "/tmp/pro.gguf",
+                resolvedMTPPath: "/tmp/support.gguf",
+                modelProfile: pro,
+                supportProfile: support
+            )
+        }
+
+        config.mtpMode = .dspark
+        XCTAssertEqual(
+            config.validationErrors(modelProfile: pro)[.mtpMode],
+            "DSpark has no support GGUF for DeepSeek V4 Pro"
+        )
+        XCTAssertFalse(arguments(DS4SupportProfile(
+            kind: .dspark,
+            architecture: "deepseek4-dspark"
+        )).contains("--mtp-model"))
+
+        config.mtpMode = .external
+        XCTAssertEqual(
+            config.validationErrors(modelProfile: pro)[.mtpMode],
+            "Legacy MTP has no support GGUF for DeepSeek V4 Pro"
+        )
+        XCTAssertFalse(arguments(DS4SupportProfile(
+            kind: .legacyMTP,
+            architecture: "deepseek4_mtp_support"
+        )).contains("--mtp-model"))
+    }
+
+    func testSelectingProTurnsSavedSupportFileModesOff() {
+        var config = ServerConfiguration.Config(modelPath: "/tmp/deepseek.gguf")
+        let key = ServerConfiguration.Config.modelKey(
+            for: "/tmp/pro.gguf",
+            serverPath: config.serverPath
+        )
+
+        for mode in [MTPMode.dspark, .external] {
+            config.mtpMode = mode
+            config.modelProfiles[key] = DS4TuningProfile(configuration: config)
+            XCTAssertEqual(
+                config.selectingModel(path: "/tmp/pro.gguf", profile: Self.pro).mtpMode,
+                .off,
+                "\(mode)"
+            )
+        }
+    }
+
     func testAuxiliaryGGUFsAreRejectedAsMainModels() throws {
         for architecture in [
             "deepseek4_mtp_support", "deepseek4-dspark", "deepseek41-dspark",

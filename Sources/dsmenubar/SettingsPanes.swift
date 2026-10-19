@@ -508,6 +508,9 @@ extension SettingsView {
                           systemImage: "exclamationmark.triangle.fill")
                         .font(.footnote)
                         .foregroundStyle(modelProfile.isSupportArtifact ? Color.red : Color.orange)
+                    if let error = validationErrors[.mtpMode] {
+                        validationLabel(error, for: .mtpMode)
+                    }
                 }
             }
 

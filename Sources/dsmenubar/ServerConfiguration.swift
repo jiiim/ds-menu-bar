@@ -853,6 +853,8 @@ extension ServerConfiguration.Config {
             case .external:
                 if modelProfile.isFlashVisionExperimental {
                     errors[.mtpMode] = "Legacy MTP has no support GGUF for \(modelProfile.displayName). Use DSpark with its matching support GGUF."
+                } else if modelProfile.isPro {
+                    errors[.mtpMode] = "Legacy MTP has no support GGUF for \(modelProfile.displayName)"
                 } else if !modelProfile.supportsExternalMTP {
                     errors[.mtpMode] = "Legacy MTP is available only for DeepSeek models"
                 } else {
@@ -881,7 +883,9 @@ extension ServerConfiguration.Config {
                     }
                 }
             case .dspark:
-                if !modelProfile.supportsDSpark {
+                if modelProfile.isPro {
+                    errors[.mtpMode] = "DSpark has no support GGUF for \(modelProfile.displayName)"
+                } else if !modelProfile.supportsDSpark {
                     errors[.mtpMode] = "DSpark is available only for DeepSeek models"
                 } else {
                     nonEmpty(mtpPath, field: .mtpPath, message: "Choose a DSpark support model")
@@ -1104,7 +1108,8 @@ extension ServerConfiguration.Config {
         switch profile.family {
         case .deepSeek:
             if mtpMode == .embedded ||
-                (mtpMode == .external && !profile.supportsExternalMTP) {
+                (mtpMode == .external && !profile.supportsExternalMTP) ||
+                (mtpMode == .dspark && !profile.supportsDSpark) {
                 mtpMode = .off
             }
         case .qwen38, .glm52, .glm53Full, .glm53Flash, .glm5Full:

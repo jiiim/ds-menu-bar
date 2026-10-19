@@ -85,9 +85,8 @@ struct DS4ModelProfile: Equatable {
     var displayName: String {
         switch family {
         case .deepSeek:
-            return isFlashVisionExperimental
-                ? "DeepSeek V4 Flash Vision Experimental"
-                : "DeepSeek V4"
+            if isFlashVisionExperimental { return "DeepSeek V4 Flash Vision Experimental" }
+            return isPro ? "DeepSeek V4 Pro" : "DeepSeek V4"
         case .deepSeek41: return "DeepSeek V4.1 Flash"
         case .qwen38: return "Qwen3.8 Flash Next"
         case .glm52: return "GLM 5.2 (full)"
@@ -119,11 +118,21 @@ struct DS4ModelProfile: Equatable {
             return false
         }
     }
+    /// True for DeepSeek V4 Pro. ds4 selects Pro by its shape: 61 layers and
+    /// an embedding width of 7168, against 43 and 4096 for Flash.
+    var isPro: Bool {
+        family == .deepSeek &&
+            blockCount == Self.proBlockCount &&
+            embeddingLength == Self.proEmbeddingLength
+    }
     /// ds4 accepts a support GGUF only when its checkpoint matches the main
     /// model. The only Vision Experimental support file published is DSpark,
-    /// so Legacy MTP is not offered for that checkpoint.
-    var supportsExternalMTP: Bool { family == .deepSeek && !isFlashVisionExperimental }
-    var supportsDSpark: Bool { family == .deepSeek || family == .deepSeek41 }
+    /// so Legacy MTP is not offered for that checkpoint. Pro has no published
+    /// support file of either kind, so it is offered neither.
+    var supportsExternalMTP: Bool {
+        family == .deepSeek && !isFlashVisionExperimental && !isPro
+    }
+    var supportsDSpark: Bool { (family == .deepSeek && !isPro) || family == .deepSeek41 }
     /// DSpark supports SSD streaming for V4.1 only. Earlier V4 DSpark
     /// implementations require resident target weights.
     var supportsDSparkWithSSDStreaming: Bool { family == .deepSeek41 }
@@ -177,6 +186,8 @@ struct DS4ModelProfile: Equatable {
     }
 
     static let unknown = Self(family: .unknown, architecture: nil)
+    private static let proBlockCount = 61
+    private static let proEmbeddingLength = 7_168
 
     static func from(architecture: String) -> Self {
         let normalized = architecture.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
