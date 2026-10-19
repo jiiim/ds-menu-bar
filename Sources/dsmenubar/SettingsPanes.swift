@@ -83,7 +83,10 @@ extension SettingsView {
             Section {
                 VStack(alignment: .leading, spacing: 4) {
                     Button("Restore All Tuning Defaults", role: .destructive) {
-                        draft = draft.restoringTuningDefaults(for: modelProfile)
+                        draft = draft.restoringTuningDefaults(
+                            for: modelProfile,
+                            saved: server.configurationSnapshot()
+                        )
                         showNotice("Tuning defaults restored for \(modelProfile.displayName) in this draft. Apply to use them.")
                     }
                     Text("Restores tuning and feature settings for the selected model while preserving its model paths and the app's General, Server, and Diagnostics settings. Changes take effect only after Apply.")
@@ -455,7 +458,7 @@ extension SettingsView {
             } else if modelProfile.supportsExternalMTP || modelProfile.supportsDSpark {
                 Section("Speculative decoding") {
                     VStack(alignment: .leading, spacing: 4) {
-                        Picker("Mode", selection: $draft.mtpMode) {
+                        Picker("Mode", selection: mtpModeBinding) {
                             Text(MTPMode.off.title).tag(MTPMode.off)
                             Text(MTPMode.dspark.title).tag(MTPMode.dspark)
                             if modelProfile.supportsExternalMTP || draft.mtpMode == .external {
@@ -488,6 +491,11 @@ extension SettingsView {
                         }
                         Toggle("Use exact sampling", isOn: $draft.mtpExactSampling)
                         Toggle("Strict DSpark mode", isOn: $draft.dsparkStrict)
+                        if modelProfile.supportsDSparkWithSSDStreaming && draft.ssdStreamingEnabled {
+                            Text("V4.1 keeps the DSpark model resident while target experts stream from SSD. Allow about 8 GiB beyond the main model cache.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
             } else {
@@ -1080,9 +1088,7 @@ extension SettingsView {
             }
             if supportProfile.isUsable {
                 LabeledContent("Checkpoint") {
-                    Text(supportProfile.isFlashVisionExperimental
-                         ? "DeepSeek V4 Flash Vision Experimental"
-                         : "DeepSeek V4 Flash")
+                    Text(supportProfile.checkpointName ?? "Unrecognized")
                         .foregroundStyle(supportProfile.isCompatible(with: modelProfile) ? Color.secondary : Color.red)
                 }
             }

@@ -645,6 +645,19 @@ struct SettingsView: View {
         )
     }
 
+    var mtpModeBinding: Binding<MTPMode> {
+        Binding(
+            get: { draft.mtpMode },
+            set: {
+                draft = draft.selectingMTPMode(
+                    $0,
+                    for: modelProfile,
+                    saved: server.configurationSnapshot()
+                )
+            }
+        )
+    }
+
     var dsparkConfidenceBinding: Binding<Double> {
         Binding(
             get: { draft.dsparkConfidence ?? draft.automaticDSparkConfidence },

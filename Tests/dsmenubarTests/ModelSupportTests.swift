@@ -21,6 +21,7 @@ final class ModelSupportTests: XCTestCase {
         XCTAssertEqual(deepSeekV4.displayName, "DeepSeek V4")
         XCTAssertTrue(try inspect(architecture: "deepseek4_mtp_support").isSupportArtifact)
         XCTAssertTrue(try inspect(architecture: "deepseek4-dspark").isSupportArtifact)
+        XCTAssertTrue(try inspect(architecture: "deepseek41-dspark").isSupportArtifact)
         XCTAssertTrue(try inspect(architecture: "glm5-next-vision").isSupportArtifact)
         XCTAssertEqual(try inspect(architecture: "qwen3-next").family, .unknown)
     }
@@ -405,6 +406,81 @@ final class ModelSupportTests: XCTestCase {
         XCTAssertFalse(plain.isFlashVisionExperimental)
     }
 
+    func testV41DSparkProfileLinksArchitectureToItsTargetFamily() throws {
+        let v41URL = temporaryURL()
+        try makeGGUF(
+            architecture: "deepseek41-dspark",
+            tensorNames: Self.dsparkTensors,
+            stringMetadata: ["dspark.target_architecture": "deepseek41"]
+        ).write(to: v41URL)
+        defer { try? FileManager.default.removeItem(at: v41URL) }
+
+        let profile = try GGUFModelInspector.supportProfile(at: v41URL.path)
+        XCTAssertEqual(profile.kind, .dspark)
+        XCTAssertEqual(profile.architecture, "deepseek41-dspark")
+        XCTAssertEqual(profile.targetArchitecture, "deepseek41")
+        XCTAssertEqual(profile.checkpointName, "DeepSeek V4.1 Flash")
+        XCTAssertEqual(
+            DS4ModelProfile.from(architecture: "deepseek41-dspark").displayName,
+            "DeepSeek V4.1 Flash DSpark support GGUF"
+        )
+        XCTAssertTrue(profile.isCompatible(with: .from(architecture: "deepseek41")))
+        XCTAssertFalse(profile.isCompatible(with: .from(architecture: "deepseek4")))
+    }
+
+    func testV41DSparkRequiresBothFamilyMetadataFields() throws {
+        let wrongTargetURL = temporaryURL()
+        try makeGGUF(
+            architecture: "deepseek41-dspark",
+            tensorNames: Self.dsparkTensors,
+            stringMetadata: ["dspark.target_architecture": "deepseek4"]
+        ).write(to: wrongTargetURL)
+        defer { try? FileManager.default.removeItem(at: wrongTargetURL) }
+
+        let missingTargetURL = temporaryURL()
+        try makeGGUF(
+            architecture: "deepseek41-dspark",
+            tensorNames: Self.dsparkTensors
+        ).write(to: missingTargetURL)
+        defer { try? FileManager.default.removeItem(at: missingTargetURL) }
+
+        let model = DS4ModelProfile.from(architecture: "deepseek41")
+        for url in [wrongTargetURL, missingTargetURL] {
+            let profile = try GGUFModelInspector.supportProfile(at: url.path)
+            XCTAssertEqual(profile.kind, .dspark)
+            XCTAssertFalse(profile.isCompatible(with: model), url.lastPathComponent)
+            XCTAssertNil(profile.checkpointName, url.lastPathComponent)
+        }
+    }
+
+    func testLegacyMTPTargetFamilyMustMatchTheMainModel() throws {
+        let url = temporaryURL()
+        try makeGGUF(
+            architecture: "deepseek4_mtp_support",
+            tensorNames: [
+                "mtp.0.e_proj.weight",
+                "mtp.0.h_proj.weight",
+                "mtp.0.hc_head_base.weight"
+            ],
+            stringMetadata: ["dspark.target_architecture": "deepseek41"]
+        ).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let profile = try GGUFModelInspector.supportProfile(at: url.path)
+        let flash = DS4ModelProfile.from(architecture: "deepseek4")
+        XCTAssertEqual(profile.kind, .legacyMTP)
+        XCTAssertEqual(profile.targetArchitecture, "deepseek41")
+        XCTAssertNil(profile.checkpointName)
+        XCTAssertFalse(profile.isCompatible(with: flash))
+
+        var config = ServerConfiguration.Config()
+        config.mtpMode = .external
+        XCTAssertEqual(
+            config.validationErrors(modelProfile: flash, supportProfile: profile)[.mtpPath],
+            "This legacy MTP support GGUF is not built for DeepSeek V4. Choose the Flash 0731 legacy MTP GGUF."
+        )
+    }
+
     func testSupportCheckpointMustMatchTheMainModel() {
         let flash = DS4ModelProfile.from(architecture: "deepseek4")
         let vision = DS4ModelProfile(
@@ -459,13 +535,22 @@ final class ModelSupportTests: XCTestCase {
             sourceRevision: Self.visionExpRevision
         )
         let flashLegacy = DS4SupportProfile(kind: .legacyMTP, architecture: "deepseek4_mtp_support")
+        let v41 = DS4ModelProfile.from(architecture: "deepseek41")
+        let v41DSpark = DS4SupportProfile(
+            kind: .dspark,
+            architecture: "deepseek41-dspark",
+            targetArchitecture: "deepseek41"
+        )
 
         var config = ServerConfiguration.Config()
         config.mtpMode = .dspark
         XCTAssertNil(config.validationErrors(modelProfile: flash, supportProfile: flashDSpark)[.mtpPath])
         XCTAssertNil(config.validationErrors(modelProfile: vision, supportProfile: visionDSpark)[.mtpPath])
+        XCTAssertNil(config.validationErrors(modelProfile: v41, supportProfile: v41DSpark)[.mtpPath])
         XCTAssertNotNil(config.validationErrors(modelProfile: vision, supportProfile: flashDSpark)[.mtpPath])
         XCTAssertNotNil(config.validationErrors(modelProfile: flash, supportProfile: visionDSpark)[.mtpPath])
+        XCTAssertNotNil(config.validationErrors(modelProfile: v41, supportProfile: flashDSpark)[.mtpPath])
+        XCTAssertNotNil(config.validationErrors(modelProfile: flash, supportProfile: v41DSpark)[.mtpPath])
 
         func arguments(_ model: DS4ModelProfile, _ support: DS4SupportProfile) -> [String] {
             DS4ServerCommand.arguments(
@@ -477,13 +562,55 @@ final class ModelSupportTests: XCTestCase {
             )
         }
         XCTAssertTrue(arguments(vision, visionDSpark).contains("--dspark"))
+        XCTAssertTrue(arguments(v41, v41DSpark).contains("--dspark"))
         XCTAssertFalse(arguments(vision, flashDSpark).contains("--mtp-model"))
         XCTAssertFalse(arguments(flash, visionDSpark).contains("--mtp-model"))
+        XCTAssertFalse(arguments(v41, flashDSpark).contains("--mtp-model"))
+        XCTAssertFalse(arguments(flash, v41DSpark).contains("--mtp-model"))
 
         config.mtpMode = .external
         XCTAssertNil(config.validationErrors(modelProfile: flash, supportProfile: flashLegacy)[.mtpPath])
         XCTAssertNotNil(config.validationErrors(modelProfile: flash, supportProfile: visionLegacy)[.mtpPath])
         XCTAssertFalse(arguments(flash, visionLegacy).contains("--mtp-model"))
+    }
+
+    func testDSparkMismatchMessagesNameTheFileToChoose() {
+        let flash = DS4ModelProfile.from(architecture: "deepseek4")
+        let v41 = DS4ModelProfile.from(architecture: "deepseek41")
+        let visionDSpark = DS4SupportProfile(
+            kind: .dspark,
+            architecture: "deepseek4-dspark",
+            checkpointVariant: "vision-exp",
+            sourceRevision: Self.visionExpRevision
+        )
+        let v41DSpark = DS4SupportProfile(
+            kind: .dspark,
+            architecture: "deepseek41-dspark",
+            targetArchitecture: "deepseek41"
+        )
+        let untargeted = DS4SupportProfile(kind: .dspark, architecture: "deepseek41-dspark")
+
+        var config = ServerConfiguration.Config()
+        config.mtpMode = .dspark
+        func message(_ model: DS4ModelProfile, _ support: DS4SupportProfile) -> String? {
+            config.validationErrors(modelProfile: model, supportProfile: support)[.mtpPath]
+        }
+        XCTAssertEqual(
+            message(flash, visionDSpark),
+            "This DSpark support GGUF is built for the DeepSeek V4 Flash Vision Experimental checkpoint. Choose the Flash 0731 DSpark support GGUF."
+        )
+        XCTAssertEqual(
+            message(flash, v41DSpark),
+            "This DSpark support GGUF is built for the DeepSeek V4.1 Flash checkpoint. Choose the Flash 0731 DSpark support GGUF."
+        )
+        XCTAssertEqual(
+            message(flash, untargeted),
+            "This DSpark support GGUF is not built for DeepSeek V4. Choose the Flash 0731 DSpark support GGUF."
+        )
+        XCTAssertEqual(
+            message(v41, untargeted),
+            "This DSpark support GGUF is not built for DeepSeek V4.1 Flash. Choose the DeepSeek V4.1 Flash DSpark support GGUF."
+        )
     }
 
     func testLegacyMTPIsNotOfferedForFlashVisionExperimental() {
@@ -513,8 +640,22 @@ final class ModelSupportTests: XCTestCase {
         XCTAssertFalse(args.contains("--mtp-model"))
     }
 
+    func testV41OffersDSparkButNotLegacyMTP() {
+        let model = DS4ModelProfile.from(architecture: "deepseek41")
+        XCTAssertTrue(model.supportsDSpark)
+        XCTAssertTrue(model.supportsDSparkWithSSDStreaming)
+        XCTAssertFalse(model.supportsExternalMTP)
+        XCTAssertEqual(
+            DS4TuningProfile.defaults(for: model).mtpPath,
+            "gguf/DeepSeek-V4.1-Flash-DSpark.gguf"
+        )
+    }
+
     func testAuxiliaryGGUFsAreRejectedAsMainModels() throws {
-        for architecture in ["deepseek4_mtp_support", "deepseek4-dspark", "glm5-next-vision"] {
+        for architecture in [
+            "deepseek4_mtp_support", "deepseek4-dspark", "deepseek41-dspark",
+            "glm5-next-vision"
+        ] {
             var config = ServerConfiguration.Config()
             let profile = try inspect(architecture: architecture)
             let errors = config.validationErrors(modelProfile: profile)
@@ -676,6 +817,113 @@ final class ModelSupportTests: XCTestCase {
             config.selectingModel(path: "/tmp/vision.gguf", profile: vision).mtpMode,
             .dspark
         )
+    }
+
+    func testSelectingV41PreservesDSparkAndRepairsLegacyMode() {
+        let model = DS4ModelProfile.from(architecture: "deepseek41")
+        let path = "/tmp/deepseek41.gguf"
+        let serverPath = "/opt/ds4/ds4-server"
+        var config = ServerConfiguration.Config(serverPath: serverPath, modelPath: path)
+        let key = ServerConfiguration.Config.modelKey(
+            for: path,
+            serverPath: config.serverPath
+        )
+
+        config.mtpMode = .dspark
+        config.mtpPath = DS4TuningProfile.flashDSparkDefaultPath
+        config.modelProfiles[key] = DS4TuningProfile(configuration: config)
+        let migrated = config.selectingModel(path: path, profile: model)
+        XCTAssertEqual(migrated.mtpMode, .dspark)
+        XCTAssertEqual(
+            migrated.mtpPath,
+            "/opt/ds4/\(DS4TuningProfile.deepSeek41DSparkDefaultPath)"
+        )
+
+        config.mtpPath = "/custom/My-V41-DSpark.gguf"
+        config.modelProfiles[key] = DS4TuningProfile(configuration: config)
+        let customized = config.selectingModel(path: path, profile: model)
+        XCTAssertEqual(customized.mtpPath, "/custom/My-V41-DSpark.gguf")
+
+        config.mtpMode = .external
+        config.modelProfiles[key] = DS4TuningProfile(configuration: config)
+        XCTAssertEqual(config.selectingModel(path: path, profile: model).mtpMode, .off)
+
+        config.mtpMode = .off
+        config.mtpPath = DS4TuningProfile.flashDSparkDefaultPath
+        config.modelProfiles[key] = DS4TuningProfile(configuration: config)
+        XCTAssertEqual(
+            config.selectingModel(path: path, profile: model).mtpPath,
+            DS4TuningProfile.flashDSparkDefaultPath
+        )
+    }
+
+    func testSwitchingThroughAV41ModelWithDSparkOffLeavesTheDraftUnchanged() {
+        let flash = DS4ModelProfile.from(architecture: "deepseek4")
+        let v41 = DS4ModelProfile.from(architecture: "deepseek41")
+        let serverPath = "/opt/ds4/ds4-server"
+        let v41Path = "/tmp/deepseek41.gguf"
+        var v41Saved = ServerConfiguration.Config(serverPath: serverPath, modelPath: v41Path)
+        v41Saved.mtpPath = "/opt/ds4/\(DS4TuningProfile.flashDSparkDefaultPath)"
+        var saved = ServerConfiguration.Config(
+            serverPath: serverPath,
+            modelPath: "/tmp/deepseek4.gguf"
+        ).storingCurrentModelProfile()
+        let v41Key = ServerConfiguration.Config.modelKey(for: v41Path, serverPath: serverPath)
+        saved.modelProfiles[v41Key] = DS4TuningProfile(configuration: v41Saved)
+
+        let there = saved.selectingModel(path: v41Path, profile: v41)
+        XCTAssertEqual(there.mtpPath, v41Saved.mtpPath)
+        XCTAssertEqual(there.selectingModel(path: saved.modelPath, profile: flash), saved)
+    }
+
+    func testV41DSparkPathFollowsTheMode() {
+        let v41 = DS4ModelProfile.from(architecture: "deepseek41")
+        let flash = DS4ModelProfile.from(architecture: "deepseek4")
+        var saved = ServerConfiguration.Config(
+            serverPath: "/opt/ds4/ds4-server",
+            modelPath: "/tmp/deepseek41.gguf"
+        )
+        let v41Default = "/opt/ds4/\(DS4TuningProfile.deepSeek41DSparkDefaultPath)"
+
+        for shipped in [
+            DS4TuningProfile.flashDSparkDefaultPath,
+            "/opt/ds4/\(DS4TuningProfile.flashDSparkDefaultPath)"
+        ] {
+            saved.mtpPath = shipped
+            let on = saved.selectingMTPMode(.dspark, for: v41, saved: saved)
+            XCTAssertEqual(on.mtpMode, .dspark)
+            XCTAssertEqual(on.mtpPath, v41Default, shipped)
+            XCTAssertEqual(on.selectingMTPMode(.off, for: v41, saved: saved), saved, shipped)
+            XCTAssertEqual(
+                saved.selectingMTPMode(.dspark, for: flash, saved: saved).mtpPath,
+                shipped
+            )
+        }
+
+        var picked = saved.selectingMTPMode(.dspark, for: v41, saved: saved)
+        picked.mtpPath = "/custom/My-DSpark.gguf"
+        XCTAssertEqual(
+            picked.selectingMTPMode(.off, for: v41, saved: saved).mtpPath,
+            "/custom/My-DSpark.gguf"
+        )
+
+        let applied = saved.selectingMTPMode(.dspark, for: v41, saved: saved)
+        XCTAssertEqual(
+            applied.selectingMTPMode(.off, for: v41, saved: applied).mtpPath,
+            v41Default
+        )
+    }
+
+    func testRestoringDefaultsAfterChoosingV41DSparkMatchesTheSavedPath() {
+        let v41 = DS4ModelProfile.from(architecture: "deepseek41")
+        let saved = ServerConfiguration.Config(
+            serverPath: "/opt/ds4/ds4-server",
+            modelPath: "/tmp/deepseek41.gguf"
+        ).normalized().restoringTuningDefaults(for: v41)
+        XCTAssertEqual(saved.mtpPath, "/opt/ds4/\(DS4TuningProfile.flashDSparkDefaultPath)")
+
+        let on = saved.selectingMTPMode(.dspark, for: v41, saved: saved)
+        XCTAssertEqual(on.restoringTuningDefaults(for: v41, saved: saved), saved)
     }
 
     func testRestoreTuningDefaultsOnlyResetsActiveModelProfile() {

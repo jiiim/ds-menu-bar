@@ -98,6 +98,7 @@ struct DS4ModelProfile: Equatable {
             switch architecture {
             case "deepseek4_mtp_support": return "DeepSeek legacy MTP support GGUF"
             case "deepseek4-dspark": return "DeepSeek DSpark support GGUF"
+            case "deepseek41-dspark": return "DeepSeek V4.1 Flash DSpark support GGUF"
             case "glm5-next-vision": return "GLM 5.3 Flash vision encoder GGUF"
             case "deepseek4-vision": return "DeepSeek vision encoder GGUF"
             case "qwen4-exp-ple": return "Legacy Qwen PLE sidecar GGUF"
@@ -122,7 +123,10 @@ struct DS4ModelProfile: Equatable {
     /// model. The only Vision Experimental support file published is DSpark,
     /// so Legacy MTP is not offered for that checkpoint.
     var supportsExternalMTP: Bool { family == .deepSeek && !isFlashVisionExperimental }
-    var supportsDSpark: Bool { family == .deepSeek }
+    var supportsDSpark: Bool { family == .deepSeek || family == .deepSeek41 }
+    /// DSpark supports SSD streaming for V4.1 only. Earlier V4 DSpark
+    /// implementations require resident target weights.
+    var supportsDSparkWithSSDStreaming: Bool { family == .deepSeek41 }
     var supportsBatchedEmbeddedMTP: Bool {
         family == .qwen38 && supportsEmbeddedMTP
     }
@@ -189,7 +193,8 @@ struct DS4ModelProfile: Equatable {
             return Self(family: .qwen38, architecture: normalized, contextLength: 262_144)
         case "deepseek4_mtp_support":
             return Self(family: .supportModel, architecture: normalized)
-        case "deepseek4-dspark", "glm5-next-vision", "deepseek4-vision", "qwen4-exp-ple", "clip":
+        case "deepseek4-dspark", "deepseek41-dspark", "glm5-next-vision",
+             "deepseek4-vision", "qwen4-exp-ple", "clip":
             return Self(family: .supportModel, architecture: normalized)
         default:
             return Self(family: .unknown, architecture: normalized)
@@ -249,6 +254,11 @@ enum QwenYarnFactor: String, Codable, CaseIterable, Equatable {
 /// model remains in Config; these values are remembered independently for
 /// every model path.
 struct DS4TuningProfile: Codable, Equatable {
+    static let flashDSparkDefaultPath =
+        "gguf/DeepSeek-V4-Flash-DSpark-support-0731.gguf"
+    static let deepSeek41DSparkDefaultPath =
+        "gguf/DeepSeek-V4.1-Flash-DSpark.gguf"
+
     var defaultTokens = 0
     var ctxSize = 1_000_000
     var threads = 0
@@ -274,7 +284,7 @@ struct DS4TuningProfile: Codable, Equatable {
     var disableExactDSMLToolReplay = false
     var toolMemoryMaxIDs = 100_000
 
-    var mtpPath = "gguf/DeepSeek-V4-Flash-DSpark-support-0731.gguf"
+    var mtpPath = Self.flashDSparkDefaultPath
     var qwenMTPDepth = QwenMTPDepth.automatic
     var qwenYarnFactor = QwenYarnFactor.off
     var qwenImageMaxTokens = 1_024
@@ -332,6 +342,9 @@ struct DS4TuningProfile: Codable, Equatable {
         }
         if profile.prefillChunk > 0 {
             profile.prefillChunk = min(profile.prefillChunk, profile.ctxSize)
+        }
+        if modelProfile.family == .deepSeek41 {
+            profile.mtpPath = Self.deepSeek41DSparkDefaultPath
         }
         if modelProfile.family == .qwen38 && modelProfile.supportsEmbeddedMTP {
             profile.mtpMode = .embedded
@@ -512,17 +525,22 @@ enum DS4SupportKind: Equatable {
 struct DS4SupportProfile: Equatable {
     let kind: DS4SupportKind
     let architecture: String?
+    /// Emitted for V4.1 DSpark drafters; V4 Flash drafters leave it unset.
+    /// ds4 checks it on every support GGUF, legacy MTP included.
+    let targetArchitecture: String?
     let checkpointVariant: String?
     let sourceRevision: String?
 
     init(
         kind: DS4SupportKind,
         architecture: String?,
+        targetArchitecture: String? = nil,
         checkpointVariant: String? = nil,
         sourceRevision: String? = nil
     ) {
         self.kind = kind
         self.architecture = architecture
+        self.targetArchitecture = targetArchitecture
         self.checkpointVariant = checkpointVariant
         self.sourceRevision = sourceRevision
     }
@@ -539,10 +557,43 @@ struct DS4SupportProfile: Equatable {
         checkpointVariant == DS4Checkpoint.flashVisionExperimentalVariant
     }
 
-    /// Mirrors ds4's support_model_checkpoint_compatible. A Vision
-    /// Experimental main model needs a support GGUF tagged with its variant
-    /// and pinned revision; every other main model rejects such a file.
+    /// A V4.1 drafter names its family in both its architecture and its
+    /// target architecture.
+    private var isDeepSeek41: Bool {
+        architecture == "deepseek41-dspark" && targetArchitecture == "deepseek41"
+    }
+
+    /// The checkpoint the family metadata names, or nil when those fields
+    /// disagree or name an unknown family. ds4 rejects such a file for every
+    /// main model.
+    var checkpointName: String? {
+        if isDeepSeek41 {
+            return isFlashVisionExperimental ? nil : "DeepSeek V4.1 Flash"
+        }
+        guard architecture != "deepseek41-dspark",
+              targetArchitecture == nil || targetArchitecture == "deepseek4"
+        else { return nil }
+        return isFlashVisionExperimental
+            ? "DeepSeek V4 Flash Vision Experimental"
+            : "DeepSeek V4 Flash"
+    }
+
+    /// Mirrors ds4's support_model_checkpoint_compatible. V4.1 and V4 Flash
+    /// drafters use separate metadata and runtime graphs. A Vision
+    /// Experimental V4 model also needs a support GGUF tagged with its variant
+    /// and pinned revision; every other V4 model rejects such a file.
     func isCompatible(with model: DS4ModelProfile) -> Bool {
+        switch model.family {
+        case .deepSeek41:
+            return kind == .dspark && isDeepSeek41 && !isFlashVisionExperimental
+        case .deepSeek:
+            if architecture == "deepseek41-dspark" ||
+                (targetArchitecture != nil && targetArchitecture != "deepseek4") {
+                return false
+            }
+        default:
+            return false
+        }
         if model.isFlashVisionExperimental {
             return isFlashVisionExperimental &&
                 sourceRevision == DS4Checkpoint.flashVisionExperimentalRevision
@@ -920,6 +971,7 @@ private final class GGUFReader {
         guard metadataCount <= 1_000_000 else { throw ReaderError.invalidFile }
 
         var architecture: String?
+        var targetArchitecture: String?
         var checkpointVariant: String?
         var sourceRevision: String?
         for _ in 0..<metadataCount {
@@ -931,6 +983,7 @@ private final class GGUFReader {
             }
             switch key {
             case "general.architecture": architecture = try readString()
+            case "dspark.target_architecture": targetArchitecture = try readString()
             case "deepseek4.checkpoint_variant": checkpointVariant = try readString()
             case "general.source.revision": sourceRevision = try readString()
             default: try skipValue(type: type, depth: 0)
@@ -965,6 +1018,7 @@ private final class GGUFReader {
             return DS4SupportProfile(
                 kind: .dspark,
                 architecture: architecture,
+                targetArchitecture: targetArchitecture,
                 checkpointVariant: checkpointVariant,
                 sourceRevision: sourceRevision
             )
@@ -979,6 +1033,7 @@ private final class GGUFReader {
             return DS4SupportProfile(
                 kind: .legacyMTP,
                 architecture: architecture,
+                targetArchitecture: targetArchitecture,
                 checkpointVariant: checkpointVariant,
                 sourceRevision: sourceRevision
             )

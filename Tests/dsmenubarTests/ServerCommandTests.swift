@@ -759,6 +759,27 @@ final class ServerCommandTests: XCTestCase {
                 modelProfile: .from(architecture: "glm5-next")
             )[.ssdStreamingEnabled]
         )
+
+        let deepSeek41 = DS4ModelProfile.from(architecture: "deepseek41")
+        var v41DSpark = ServerConfiguration.Config()
+        v41DSpark.ssdStreamingEnabled = true
+        v41DSpark.mtpMode = .dspark
+        let v41Errors = v41DSpark.validationErrors(modelProfile: deepSeek41)
+        XCTAssertNil(v41Errors[.ssdStreamingEnabled])
+        XCTAssertNil(v41Errors[.mtpMode])
+        let v41Args = DS4ServerCommand.arguments(
+            configuration: v41DSpark,
+            resolvedModelPath: "/tmp/deepseek41.gguf",
+            resolvedMTPPath: "/tmp/deepseek41-dspark.gguf",
+            modelProfile: deepSeek41,
+            supportProfile: DS4SupportProfile(
+                kind: .dspark,
+                architecture: "deepseek41-dspark",
+                targetArchitecture: "deepseek41"
+            )
+        )
+        XCTAssertTrue(v41Args.contains("--ssd-streaming"))
+        XCTAssertTrue(v41Args.contains("--dspark"))
     }
 
     func testConditionalFieldsAreIgnoredWhenFeatureIsDisabled() {

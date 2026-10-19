@@ -108,7 +108,7 @@ final class ServerConfiguration {
 
         // Model-specific tuning. The values are the effective profile for
         // modelPath; modelProfiles remembers separate values for other models.
-        var mtpPath = "gguf/DeepSeek-V4-Flash-DSpark-support-0731.gguf"
+        var mtpPath = DS4TuningProfile.flashDSparkDefaultPath
         var qwenMTPDepth = QwenMTPDepth.automatic
         var qwenYarnFactor = QwenYarnFactor.off
         var qwenImageMaxTokens = 1_024
@@ -808,10 +808,11 @@ extension ServerConfiguration.Config {
             bounded(ssdStreamingPreloadExperts, field: .ssdStreamingPreloadExperts, label: "Preloaded experts")
         }
 
-        let usesExternalSupport =
+        let usesSSDIncompatibleSupport =
             (mtpMode == .external && modelProfile.supportsExternalMTP) ||
-            (mtpMode == .dspark && modelProfile.supportsDSpark)
-        if ssdStreamingEnabled && usesExternalSupport {
+            (mtpMode == .dspark && modelProfile.supportsDSpark &&
+                !modelProfile.supportsDSparkWithSSDStreaming)
+        if ssdStreamingEnabled && usesSSDIncompatibleSupport {
             let message = "SSD streaming cannot be used with Legacy MTP or DSpark; turn off one of these features"
             errors[.ssdStreamingEnabled] = message
             errors[.mtpMode] = message
@@ -864,7 +865,11 @@ extension ServerConfiguration.Config {
                             errors[.mtpPath] = "Choose a legacy MTP support GGUF"
                         case .legacyMTP:
                             if !supportProfile.isCompatible(with: modelProfile) {
-                                errors[.mtpPath] = "This legacy MTP support GGUF is built for the DeepSeek V4 Flash Vision Experimental checkpoint. Choose the Flash 0731 legacy MTP GGUF."
+                                if let checkpoint = supportProfile.checkpointName {
+                                    errors[.mtpPath] = "This legacy MTP support GGUF is built for the \(checkpoint) checkpoint. Choose the Flash 0731 legacy MTP GGUF."
+                                } else {
+                                    errors[.mtpPath] = "This legacy MTP support GGUF is not built for \(modelProfile.displayName). Choose the Flash 0731 legacy MTP GGUF."
+                                }
                             }
                         case .unavailable:
                             break
@@ -888,9 +893,15 @@ extension ServerConfiguration.Config {
                             errors[.mtpPath] = "Choose a DSpark support GGUF"
                         case .dspark:
                             if !supportProfile.isCompatible(with: modelProfile) {
-                                errors[.mtpPath] = modelProfile.isFlashVisionExperimental
-                                    ? "This DSpark support GGUF is not built for \(modelProfile.displayName). Choose the Vision Experimental DSpark support GGUF."
-                                    : "This DSpark support GGUF is built for the DeepSeek V4 Flash Vision Experimental checkpoint. Choose the Flash 0731 DSpark support GGUF."
+                                if modelProfile.isFlashVisionExperimental {
+                                    errors[.mtpPath] = "This DSpark support GGUF is not built for \(modelProfile.displayName). Choose the Vision Experimental DSpark support GGUF."
+                                } else if modelProfile.family == .deepSeek41 {
+                                    errors[.mtpPath] = "This DSpark support GGUF is not built for \(modelProfile.displayName). Choose the DeepSeek V4.1 Flash DSpark support GGUF."
+                                } else if let checkpoint = supportProfile.checkpointName {
+                                    errors[.mtpPath] = "This DSpark support GGUF is built for the \(checkpoint) checkpoint. Choose the Flash 0731 DSpark support GGUF."
+                                } else {
+                                    errors[.mtpPath] = "This DSpark support GGUF is not built for \(modelProfile.displayName). Choose the Flash 0731 DSpark support GGUF."
+                                }
                             }
                         case .unavailable:
                             break
@@ -1078,6 +1089,7 @@ extension ServerConfiguration.Config {
             DS4TuningProfile.defaults(for: profile).applying(to: &config)
         }
         config.repairMTPMode(for: profile)
+        config = config.migratingV41DSparkDefaultPath(for: profile.family)
         if !key.isEmpty {
             config.modelProfiles[key] = DS4TuningProfile(configuration: config)
         }
@@ -1101,10 +1113,75 @@ extension ServerConfiguration.Config {
                 mtpMode = .off
             }
         case .deepSeek41:
-            mtpMode = .off
+            if mtpMode == .embedded || mtpMode == .external {
+                mtpMode = .off
+            }
         case .supportModel, .unknown:
             if mtpMode != .off { mtpMode = .off }
         }
+    }
+
+    /// Return a draft with a new speculative-decoding mode. Choosing DSpark
+    /// for V4.1 moves a stored V4 Flash default to the V4.1 filename, so the
+    /// path row shows the file that mode needs. Choosing another mode puts
+    /// back the V4 Flash default that `saved` still holds for this model.
+    func selectingMTPMode(
+        _ mode: MTPMode,
+        for profile: DS4ModelProfile,
+        saved: Self
+    ) -> Self {
+        var config = self
+        config.mtpMode = mode
+        return config
+            .migratingV41DSparkDefaultPath(for: profile.family)
+            .restoringSavedDSparkDefaultPath(for: profile.family, saved: saved)
+    }
+
+    /// v0.0.12 used the V4 Flash DSpark filename as the default for every
+    /// DeepSeek profile, and kept DSpark off for V4.1. Once DSpark is on for
+    /// V4.1, move that exact shipped default to the V4.1 filename, while
+    /// leaving any path the user chose unchanged.
+    private func migratingV41DSparkDefaultPath(for family: DS4ModelFamily) -> Self {
+        guard family == .deepSeek41, mtpMode == .dspark,
+              namesResource(DS4TuningProfile.flashDSparkDefaultPath)
+        else { return self }
+
+        var migrated = self
+        migrated.mtpPath = DS4ServerCommand.storingResourcePath(
+            DS4TuningProfile.deepSeek41DSparkDefaultPath,
+            relativeTo: DS4ServerCommand.serverDirectory(for: serverPath)
+        )
+        return migrated
+    }
+
+    /// The reverse of `migratingV41DSparkDefaultPath`: with DSpark off again,
+    /// the V4.1 filename goes back to the V4 Flash default that `saved` holds
+    /// for this model, so the draft matches the saved configuration.
+    private func restoringSavedDSparkDefaultPath(
+        for family: DS4ModelFamily,
+        saved: Self
+    ) -> Self {
+        guard family == .deepSeek41, mtpMode != .dspark,
+              namesResource(DS4TuningProfile.deepSeek41DSparkDefaultPath)
+        else { return self }
+
+        let key = Self.modelKey(for: modelPath, serverPath: serverPath)
+        let savedPath = Self.modelKey(for: saved.modelPath, serverPath: saved.serverPath) == key
+            ? saved.mtpPath
+            : saved.modelProfiles[key]?.mtpPath
+        guard let savedPath else { return self }
+
+        var restored = self
+        restored.mtpPath = savedPath
+        return restored.namesResource(DS4TuningProfile.flashDSparkDefaultPath) ? restored : self
+    }
+
+    /// Whether `mtpPath` names `path` once both are resolved against
+    /// ds4-server's working directory.
+    private func namesResource(_ path: String) -> Bool {
+        let directory = DS4ServerCommand.serverDirectory(for: serverPath)
+        return DS4ServerCommand.storingResourcePath(mtpPath, relativeTo: directory) ==
+            DS4ServerCommand.storingResourcePath(path, relativeTo: directory)
     }
 
     /// Canonical identity for a configured model. Relative model paths are
@@ -1266,8 +1343,13 @@ extension ServerConfiguration.Config {
 extension ServerConfiguration.Config {
     /// Return this configuration with ds4-server tuning and feature settings
     /// restored to their built-in defaults. User-selected application, model,
-    /// endpoint, resource-path, and diagnostic settings are preserved.
-    func restoringTuningDefaults(for profile: DS4ModelProfile = .unknown) -> Self {
+    /// endpoint, resource-path, and diagnostic settings are preserved. With
+    /// `saved`, a mode change made by the defaults follows the same DSpark
+    /// path rule as `selectingMTPMode`.
+    func restoringTuningDefaults(
+        for profile: DS4ModelProfile = .unknown,
+        saved: Self? = nil
+    ) -> Self {
         var defaults = Self()
         defaults.serverPath = serverPath
         defaults.modelPath = modelPath
@@ -1285,6 +1367,9 @@ extension ServerConfiguration.Config {
         // Resource paths are user-selected model settings, not tuning values.
         defaults.mtpPath = mtpPath
         defaults.visionPath = visionPath
+        if let saved {
+            defaults = defaults.selectingMTPMode(defaults.mtpMode, for: profile, saved: saved)
+        }
         let key = Self.modelKey(for: modelPath, serverPath: serverPath)
         if !key.isEmpty {
             defaults.modelProfiles[key] = DS4TuningProfile(configuration: defaults)
