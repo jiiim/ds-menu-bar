@@ -189,7 +189,6 @@ final class ServerCommandTests: XCTestCase {
         XCTAssertTrue(args.contains("--prefill-chunk"))
         XCTAssertTrue(args.contains("--mtp"))
         XCTAssertFalse(args.contains("--mtp-draft"))
-        XCTAssertFalse(args.contains("--ple"))
 
         config.prefillChunk = 65_537
         XCTAssertNotNil(config.validationErrors(modelProfile: model)[.prefillChunk])

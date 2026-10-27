@@ -100,7 +100,6 @@ struct DS4ModelProfile: Equatable {
             case "deepseek41-dspark": return "DeepSeek V4.1 Flash DSpark support GGUF"
             case "glm5-next-vision": return "GLM 5.3 Flash vision encoder GGUF"
             case "deepseek4-vision": return "DeepSeek vision encoder GGUF"
-            case "qwen4-exp-ple": return "Legacy Qwen PLE sidecar GGUF"
             case "clip": return "Vision projector GGUF"
             default: return "Support GGUF (not a main model)"
             }
@@ -205,7 +204,7 @@ struct DS4ModelProfile: Equatable {
         case "deepseek4_mtp_support":
             return Self(family: .supportModel, architecture: normalized)
         case "deepseek4-dspark", "deepseek41-dspark", "glm5-next-vision",
-             "deepseek4-vision", "qwen4-exp-ple", "clip":
+             "deepseek4-vision", "clip":
             return Self(family: .supportModel, architecture: normalized)
         default:
             return Self(family: .unknown, architecture: normalized)

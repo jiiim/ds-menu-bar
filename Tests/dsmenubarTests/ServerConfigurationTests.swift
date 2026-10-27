@@ -292,26 +292,6 @@ final class ServerConfigurationTests: XCTestCase {
         XCTAssertEqual(decoded.port, 1234)
     }
 
-    func testRemovedPLESettingsAreIgnoredDuringMigration() throws {
-        let legacy = """
-        {
-          "serverPath": "/tmp/ds4-server",
-          "modelPath": "/tmp/qwen.gguf",
-          "plePath": "/tmp/legacy-ple.gguf",
-          "qwenPLEPrefetch": "full",
-          "qwenPLEEvictTokens": "4096"
-        }
-        """.data(using: .utf8)!
-
-        let decoded = try JSONDecoder().decode(ServerConfiguration.Config.self, from: legacy)
-        XCTAssertEqual(decoded.serverPath, "/tmp/ds4-server")
-        XCTAssertEqual(decoded.modelPath, "/tmp/qwen.gguf")
-
-        let encoded = String(decoding: try JSONEncoder().encode(decoded), as: UTF8.self)
-        XCTAssertFalse(encoded.contains("plePath"))
-        XCTAssertFalse(encoded.contains("qwenPLE"))
-    }
-
     func testModelProfilesRoundTripAndLegacyMTPMigration() throws {
         var config = ServerConfiguration.Config(modelPath: "/tmp/deepseek.gguf")
         config.mtpMode = .external

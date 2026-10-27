@@ -30,7 +30,6 @@ final class ModelSupportTests: XCTestCase {
         XCTAssertEqual(try inspect(architecture: "deepseek41").family, .deepSeek41)
         XCTAssertEqual(try inspect(architecture: "qwen4exp").family, .qwen38)
         XCTAssertTrue(try inspect(architecture: "deepseek4-vision").isSupportArtifact)
-        XCTAssertTrue(try inspect(architecture: "qwen4-exp-ple").isSupportArtifact)
         XCTAssertTrue(try inspect(architecture: "clip").isSupportArtifact)
     }
 
