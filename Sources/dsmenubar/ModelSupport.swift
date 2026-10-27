@@ -767,13 +767,20 @@ private final class GGUFReader {
                 profile = DS4ModelProfile(family: .glm52, architecture: prefix)
             }
         }
-        profile.contextLength = snapshot.positiveInteger("\(prefix).context_length")
+        // ds4 reads the DeepSeek V4.1 shape under its Hugging Face config
+        // names; the other families use the llama.cpp names.
+        let shape = profile.family == .deepSeek41
+            ? (context: "max_position_embeddings", blocks: "num_hidden_layers",
+               experts: "n_routed_experts", embedding: "hidden_size")
+            : (context: "context_length", blocks: "block_count",
+               experts: "expert_count", embedding: "embedding_length")
+        profile.contextLength = snapshot.positiveInteger("\(prefix).\(shape.context)")
             ?? profile.contextLength
-        profile.blockCount = snapshot.positiveInteger("\(prefix).block_count")
-        profile.expertCount = snapshot.positiveInteger("\(prefix).expert_count")
+        profile.blockCount = snapshot.positiveInteger("\(prefix).\(shape.blocks)")
+        profile.expertCount = snapshot.positiveInteger("\(prefix).\(shape.experts)")
         profile.leadingDenseBlockCount = snapshot.nonnegativeInteger("\(prefix).leading_dense_block_count")
         profile.nextnPredictLayers = snapshot.nonnegativeInteger("\(prefix).nextn_predict_layers")
-        profile.embeddingLength = snapshot.positiveInteger("\(prefix).embedding_length")
+        profile.embeddingLength = snapshot.positiveInteger("\(prefix).\(shape.embedding)")
         profile.qwenNGramRowCount = snapshot.positiveInteger("qwen4exp.ple.row_count")
         profile.qwenNGramRowDimension = snapshot.positiveInteger("qwen4exp.embedding_length_per_layer_input")
         if profile.family == .qwen38 {
@@ -941,7 +948,9 @@ private final class GGUFReader {
             "deepseek4.vision.sidecar_required", "deepseek4-vision.checkpoint_variant",
             "deepseek4-vision.projection_length",
             "clip.projector_type", "clip.vision.projection_dim",
-            "qwen4exp.ple.row_count", "qwen4exp.embedding_length_per_layer_input"
+            "qwen4exp.ple.row_count", "qwen4exp.embedding_length_per_layer_input",
+            "deepseek41.max_position_embeddings", "deepseek41.num_hidden_layers",
+            "deepseek41.n_routed_experts", "deepseek41.hidden_size"
         ]
         if exact.contains(key) { return true }
         return [

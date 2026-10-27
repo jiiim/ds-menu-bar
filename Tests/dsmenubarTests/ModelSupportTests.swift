@@ -165,22 +165,50 @@ final class ModelSupportTests: XCTestCase {
         XCTAssertEqual(profile.qwenNGramRowDimension, 256)
     }
 
-    func testDeepSeek41MainGGUFDetectsCompleteVisualRouterInventory() throws {
+    func testDeepSeek41MainGGUFReadsShapeAndCompleteVisualRouterInventory() throws {
         let url = temporaryURL()
         let biases = (0..<40).map { "blk.\($0).exp_probs_b_vl.bias" }
         try makeGGUF(
             architecture: "deepseek41",
             tensorNames: biases,
             uint32Metadata: [
-                "deepseek41.context_length": 1_048_576,
-                "deepseek41.block_count": 40
+                // Differs from the 1_048_576 fallback so the read is pinned.
+                "deepseek41.max_position_embeddings": 131_072,
+                "deepseek41.num_hidden_layers": 40,
+                "deepseek41.n_routed_experts": 384,
+                "deepseek41.hidden_size": 5_120
             ]
         ).write(to: url)
         defer { try? FileManager.default.removeItem(at: url) }
 
         let profile = try GGUFModelInspector.profile(at: url.path)
         XCTAssertEqual(profile.family, .deepSeek41)
+        XCTAssertEqual(profile.contextLength, 131_072)
+        XCTAssertEqual(profile.blockCount, 40)
+        XCTAssertEqual(profile.embeddingLength, 5_120)
+        XCTAssertEqual(profile.cacheableExpertCount, 15_360)
         XCTAssertTrue(profile.hasVisualRouterBiases)
+    }
+
+    func testDeepSeek41ShapeIgnoresLlamaCppKeys() throws {
+        let url = temporaryURL()
+        let biases = (0..<40).map { "blk.\($0).exp_probs_b_vl.bias" }
+        try makeGGUF(
+            architecture: "deepseek41",
+            tensorNames: biases,
+            uint32Metadata: [
+                "deepseek41.block_count": 40,
+                "deepseek41.expert_count": 384,
+                "deepseek41.embedding_length": 5_120
+            ]
+        ).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let profile = try GGUFModelInspector.profile(at: url.path)
+        XCTAssertNil(profile.blockCount)
+        XCTAssertNil(profile.cacheableExpertCount)
+        XCTAssertNil(profile.embeddingLength)
+        XCTAssertFalse(profile.hasVisualRouterBiases)
     }
 
     func testDeepSeek41VisualRouterInventoryRequiresEveryLayer() throws {
@@ -189,7 +217,7 @@ final class ModelSupportTests: XCTestCase {
         try makeGGUF(
             architecture: "deepseek41",
             tensorNames: biases,
-            uint32Metadata: ["deepseek41.block_count": 40]
+            uint32Metadata: ["deepseek41.num_hidden_layers": 40]
         ).write(to: url)
         defer { try? FileManager.default.removeItem(at: url) }
 
