@@ -17,8 +17,7 @@ enum DS4ServerCommand {
     /// The managed variables to scrub from the child environment for the given
     /// model family.
     ///
-    /// Checked against antirez/ds4 main `5379c1c` and ivanfioravanti/ds4-metal
-    /// `ccea7688`: every `DS4_QWEN4_*` read sits on a Qwen3.8-only path (model
+    /// Every `DS4_QWEN4_*` read in ds4 sits on a Qwen3.8-only path (model
     /// validation, Qwen vision encoding, and the Qwen MTP cycle), so known
     /// non-Qwen families inherit them untouched. Unrecognized and support
     /// profiles scrub every managed variable the app knows: it cannot rule out
