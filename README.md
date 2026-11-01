@@ -77,8 +77,8 @@ instructions and model-format information. DS Menu Bar does not include
 > versioned releases. Compatibility is therefore tracked against specific
 > commits on its `main` branch, and DS Menu Bar is updated as upstream changes
 > are reviewed. The latest known compatible commit is
-> [`c97964b`](https://github.com/antirez/ds4/commit/c97964b8aa77034a8e17afb10ca7a686c40ab511)
-> (October 30, 2026). Newer versions of `ds4-server` may also work, but
+> [`b4e3faf`](https://github.com/antirez/ds4/commit/b4e3faf5262b21db94ec309cf321640ff1eed460)
+> (November 1, 2026). Newer versions of `ds4-server` may also work, but
 > compatibility is not guaranteed.
 
 ## Supported models
