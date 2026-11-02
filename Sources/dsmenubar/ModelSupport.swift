@@ -47,6 +47,10 @@ struct DS4ModelProfile: Equatable {
     /// Qwen files are true only when they contain ds4's required BF16 table.
     var hasNativeQwenNGrams: Bool?
     var hasVisualRouterBiases: Bool
+    /// GGML types of the routed-expert gate, up, and down tensors across all
+    /// layers. Read for Qwen only; nil when no GGUF was inspected or it has no
+    /// routed experts.
+    var routedExpertTypes: Set<UInt32>?
     /// True only for the main DeepSeek V4 Flash Vision Experimental GGUF.
     /// Plain DeepSeek V4 uses the same architecture string, so this is read
     /// from the checkpoint variant metadata instead.
@@ -65,6 +69,7 @@ struct DS4ModelProfile: Equatable {
         qwenNGramRowDimension: Int? = nil,
         hasNativeQwenNGrams: Bool? = nil,
         hasVisualRouterBiases: Bool = false,
+        routedExpertTypes: Set<UInt32>? = nil,
         isFlashVisionExperimental: Bool = false
     ) {
         self.family = family
@@ -79,6 +84,7 @@ struct DS4ModelProfile: Equatable {
         self.qwenNGramRowDimension = qwenNGramRowDimension
         self.hasNativeQwenNGrams = hasNativeQwenNGrams
         self.hasVisualRouterBiases = hasVisualRouterBiases
+        self.routedExpertTypes = routedExpertTypes
         self.isFlashVisionExperimental = isFlashVisionExperimental
     }
 
@@ -793,6 +799,9 @@ private final class GGUFReader {
             } else {
                 profile.hasNativeQwenNGrams = false
             }
+            profile.routedExpertTypes = snapshot.routedExpertTypes.isEmpty
+                ? nil
+                : snapshot.routedExpertTypes
         }
         profile.hasVisualRouterBiases = profile.family == .deepSeek41 &&
             profile.blockCount.map { snapshot.visualRouterLayers.isSuperset(of: 0..<$0) } == true
@@ -856,6 +865,7 @@ private final class GGUFReader {
         var qwenNGramDimensions: [UInt64]?
         var qwenNGramType: UInt32?
         var visualRouterLayers: Set<Int> = []
+        var routedExpertTypes: Set<UInt32> = []
 
         func string(_ key: String) -> String? {
             strings[key] ?? integers[key].map(String.init)
@@ -936,9 +946,17 @@ private final class GGUFReader {
                 let end = name.index(name.endIndex, offsetBy: -".exp_probs_b_vl.bias".count)
                 if let layer = Int(name[start..<end]) { snapshot.visualRouterLayers.insert(layer) }
             }
+            if name.hasPrefix("blk."),
+               Self.routedExpertSuffixes.contains(where: { name.hasSuffix($0) }) {
+                snapshot.routedExpertTypes.insert(tensorType)
+            }
         }
         return snapshot
     }
+
+    private static let routedExpertSuffixes = [
+        ".ffn_gate_exps.weight", ".ffn_up_exps.weight", ".ffn_down_exps.weight"
+    ]
 
     private static func profileMetadataKey(_ key: String) -> Bool {
         let exact: Set<String> = [

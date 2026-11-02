@@ -55,12 +55,9 @@ enum ActiveModelDescription {
         return Location(
             fileName: fileName,
             resolvedPath: resolved,
-            // attributesOfItem reports a symlink's own size and date, so the
-            // identity has to come from the file the link points at or a
-            // replaced target would keep its old description cached.
-            identity: SettingsFileIdentity(
-                path: URL(fileURLWithPath: resolved).resolvingSymlinksInPath().path
-            )
+            // Follows symlinks, so a replaced target does not keep its old
+            // description cached.
+            identity: SettingsFileIdentity(path: resolved)
         )
     }
 

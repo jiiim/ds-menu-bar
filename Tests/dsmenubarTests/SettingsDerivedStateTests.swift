@@ -50,7 +50,8 @@ final class SettingsDerivedStateTests: XCTestCase {
     /// getting `model` back.
     private func previous(
         for config: ServerConfiguration.Config,
-        model: DS4ModelProfile
+        model: DS4ModelProfile,
+        m4QwenTuning: Bool = false
     ) -> SettingsDerivedPrevious {
         SettingsDerivedPrevious(
             inputs: SettingsDerivedInputs(config),
@@ -62,6 +63,7 @@ final class SettingsDerivedStateTests: XCTestCase {
                 architecture: nil,
                 projectionDimension: nil
             ),
+            m4QwenTuning: m4QwenTuning,
             identities: SettingsDerivedFileIdentities.inspecting(config)
         )
     }
@@ -119,6 +121,112 @@ final class SettingsDerivedStateTests: XCTestCase {
         XCTAssertNotEqual(
             result.model, .unknown,
             "a file replaced under an unchanged path must be re-inspected"
+        )
+    }
+
+    func testUnchangedExecutableReusesTheM4TuningDecision() throws {
+        let model = try writeModel(named: "model.gguf", architecture: "qwen4exp")
+        let config = config(modelPath: model.path)
+        try Data("stock".utf8).write(to: URL(fileURLWithPath: config.serverPath))
+
+        // The opposite of what a scan would return, on any GPU.
+        let sentinel = !DS4M4QwenTuning.applies(toServerAt: config.serverPath)
+        let result = SettingsDerivedRefresh.compute(
+            config: config,
+            inputs: SettingsDerivedInputs(config),
+            previous: previous(for: config, model: .unknown, m4QwenTuning: sentinel),
+            forceRefresh: false
+        )
+
+        XCTAssertEqual(result.m4QwenTuning, sentinel, "an unchanged executable must not be rescanned")
+    }
+
+    func testExecutableReplacedInPlaceIsRescannedForItsM4Defaults() throws {
+        let model = try writeModel(named: "model.gguf", architecture: "qwen4exp")
+        let config = config(modelPath: model.path)
+        let server = URL(fileURLWithPath: config.serverPath)
+        try Data("stock".utf8).write(to: server)
+        let stale = previous(
+            for: config,
+            model: .unknown,
+            m4QwenTuning: !DS4M4QwenTuning.applies(toServerAt: config.serverPath)
+        )
+
+        // A rebuild that gained the M4 gates, at a different length.
+        try (Data("rebuilt with ".utf8) + DS4M4QwenTuning.serverM4Marker).write(to: server)
+
+        let result = SettingsDerivedRefresh.compute(
+            config: config,
+            inputs: SettingsDerivedInputs(config),
+            previous: stale,
+            forceRefresh: false
+        )
+
+        XCTAssertEqual(result.m4QwenTuning, DS4M4QwenTuning.applies(toServerAt: config.serverPath))
+        XCTAssertFalse(result.m4QwenTuning, "an executable with its own M4 defaults takes no overrides")
+    }
+
+    func testExecutableRebuiltBehindASymlinkIsRescannedForItsM4Defaults() throws {
+        let model = try writeModel(named: "model.gguf", architecture: "qwen4exp")
+        let config = config(modelPath: model.path)
+        let target = directory.appendingPathComponent("build/ds4-server")
+        try FileManager.default.createDirectory(
+            at: target.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("stock".utf8).write(to: target)
+        try FileManager.default.createSymbolicLink(
+            atPath: config.serverPath,
+            withDestinationPath: target.path
+        )
+        // `true` is the one value a rescan of the rebuilt target can never
+        // return, on any GPU, so seeing it back means the link hid the rebuild.
+        let stale = previous(for: config, model: .unknown, m4QwenTuning: true)
+
+        // The link is untouched; only its target is rebuilt, at a new length.
+        try (Data("rebuilt with ".utf8) + DS4M4QwenTuning.serverM4Marker).write(to: target)
+
+        let result = SettingsDerivedRefresh.compute(
+            config: config,
+            inputs: SettingsDerivedInputs(config),
+            previous: stale,
+            forceRefresh: false
+        )
+
+        XCTAssertFalse(
+            result.m4QwenTuning,
+            "a target rebuilt behind a symlinked server path must be rescanned"
+        )
+    }
+
+    func testFilesReplacedBehindSymlinksAreReinspected() throws {
+        let models = directory.appendingPathComponent("models")
+        try FileManager.default.createDirectory(at: models, withIntermediateDirectories: true)
+        let modelTarget = try writeModel(named: "models/model-target.gguf", architecture: "glm5-next")
+        let supportTarget = try writeModel(named: "models/support-target.gguf", architecture: "glm5-next")
+        let modelLink = directory.appendingPathComponent("model.gguf")
+        let supportLink = directory.appendingPathComponent("support.gguf")
+        try FileManager.default.createSymbolicLink(at: modelLink, withDestinationURL: modelTarget)
+        try FileManager.default.createSymbolicLink(at: supportLink, withDestinationURL: supportTarget)
+        var config = config(modelPath: modelLink.path)
+        config.mtpPath = supportLink.path
+        let stale = previous(for: config, model: .unknown)
+
+        // The links stay put; only their targets change, at new lengths.
+        try makeGGUF(architecture: "deepseek4").write(to: modelTarget)
+        try makeGGUF(architecture: "deepseek4_mtp_support").write(to: supportTarget)
+
+        let result = SettingsDerivedRefresh.compute(
+            config: config,
+            inputs: SettingsDerivedInputs(config),
+            previous: stale,
+            forceRefresh: false
+        )
+
+        XCTAssertEqual(result.model.family, .deepSeek, "a model replaced behind a symlink must be re-inspected")
+        XCTAssertNotEqual(
+            result.support, .unavailable,
+            "a support file replaced behind a symlink must be re-inspected"
         )
     }
 
@@ -230,6 +338,41 @@ final class SettingsDerivedStateTests: XCTestCase {
         XCTAssertNotEqual(
             checks.serverError, "cached refusal",
             "a replaced binary must be re-run rather than trusted"
+        )
+    }
+
+    func testApplyRechecksAnExecutableRebuiltBehindASymlink() throws {
+        let target = directory.appendingPathComponent("ds4-server-build")
+        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: target)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: target.path
+        )
+        let server = directory.appendingPathComponent("ds4-server")
+        try FileManager.default.createSymbolicLink(at: server, withDestinationURL: target)
+        let model = try writeModel(named: "model.gguf", architecture: "glm5-next")
+        var candidate = ServerConfiguration.Config()
+        candidate.serverPath = server.path
+        candidate.modelPath = model.path
+
+        let staleIdentity = SettingsFileIdentity(path: server.path)
+        // The link is unchanged; the binary it points to is rebuilt.
+        try Data("#!/bin/sh\necho rebuilt\nexit 0\n".utf8).write(to: target)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: target.path
+        )
+
+        let checks = SettingsApplyChecks.compute(
+            candidate: candidate,
+            previousServerPath: candidate.serverPath,
+            previousServerIdentity: staleIdentity,
+            previousServerError: "cached refusal"
+        )
+
+        XCTAssertNotEqual(
+            checks.serverError, "cached refusal",
+            "a binary rebuilt behind a symlink must be re-run rather than trusted"
         )
     }
 
@@ -371,6 +514,20 @@ final class SettingsDerivedStateTests: XCTestCase {
         try Data("considerably longer contents".utf8).write(to: file)
 
         XCTAssertNotEqual(before, SettingsFileIdentity(path: file.path))
+    }
+
+    func testIdentityFollowsSymlinksAndAnEmptyPathIsUnavailable() throws {
+        XCTAssertEqual(SettingsFileIdentity(path: ""), .unavailable)
+
+        let target = directory.appendingPathComponent("target.bin")
+        try Data("one".utf8).write(to: target)
+        let link = directory.appendingPathComponent("link.bin")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+        XCTAssertEqual(SettingsFileIdentity(path: link.path), SettingsFileIdentity(path: target.path))
+
+        let before = SettingsFileIdentity(path: link.path)
+        try Data("considerably longer contents".utf8).write(to: target)
+        XCTAssertNotEqual(before, SettingsFileIdentity(path: link.path))
     }
 
     // MARK: - Pane routing

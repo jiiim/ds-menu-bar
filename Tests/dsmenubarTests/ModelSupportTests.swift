@@ -164,6 +164,44 @@ final class ModelSupportTests: XCTestCase {
         XCTAssertEqual(profile.qwenNGramRowDimension, 256)
     }
 
+    func testQwenRecordsRoutedExpertTypesAcrossLayers() throws {
+        // The Q2 pack's layout: IQ2_XXS gate/up and Q2_K down in the trunk,
+        // Q4_K gate/up and MXFP4 down in the MTP layer.
+        var dimensions: [String: [UInt64]] = [:]
+        var types: [String: UInt32] = [:]
+        for (layer, gateUp, down) in [(0, UInt32(16), UInt32(10)), (1, 16, 10), (2, 12, 39)] {
+            for (role, type) in [("gate", gateUp), ("up", gateUp), ("down", down)] {
+                dimensions["blk.\(layer).ffn_\(role)_exps.weight"] = [256, 128, 8]
+                types["blk.\(layer).ffn_\(role)_exps.weight"] = type
+            }
+        }
+        dimensions["blk.0.ffn_gate_shexp.weight"] = [256, 128]
+        types["blk.0.ffn_gate_shexp.weight"] = 8
+        let url = temporaryURL()
+        try makeGGUF(
+            architecture: "qwen4exp",
+            tensorDimensions: dimensions,
+            tensorTypes: types
+        ).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let profile = try GGUFModelInspector.profile(at: url.path)
+        XCTAssertEqual(profile.routedExpertTypes, [10, 12, 16, 39])
+    }
+
+    func testRoutedExpertTypesAreNilWithoutExpertsOrOutsideQwen() throws {
+        XCTAssertNil(try inspect(architecture: "qwen4exp").routedExpertTypes)
+
+        let url = temporaryURL()
+        try makeGGUF(
+            architecture: "glm5-next",
+            tensorDimensions: ["blk.0.ffn_gate_exps.weight": [256, 128, 8]],
+            tensorTypes: ["blk.0.ffn_gate_exps.weight": 12]
+        ).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        XCTAssertNil(try GGUFModelInspector.profile(at: url.path).routedExpertTypes)
+    }
+
     func testDeepSeek41MainGGUFReadsShapeAndCompleteVisualRouterInventory() throws {
         let url = temporaryURL()
         let biases = (0..<40).map { "blk.\($0).exp_probs_b_vl.bias" }

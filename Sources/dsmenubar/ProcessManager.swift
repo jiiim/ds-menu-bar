@@ -234,13 +234,19 @@ final class ProcessManager {
             visionProfile: visionProfile
         )
         proc.arguments = args
+        // Scanned here rather than remembered: the executable at this path can
+        // be rebuilt between launches.
+        let m4QwenTuning = modelProfile.family == .qwen38 &&
+            DS4M4QwenTuning.applies(toServerAt: resolvedServerPath)
         let environmentOverrides = DS4ServerCommand.environmentOverrides(
             configuration: configuration,
-            modelProfile: modelProfile
+            modelProfile: modelProfile,
+            m4QwenTuning: m4QwenTuning
         )
         proc.environment = DS4ServerCommand.launchEnvironment(
             configuration: configuration,
-            modelProfile: modelProfile
+            modelProfile: modelProfile,
+            m4QwenTuning: m4QwenTuning
         )
 
         // Working directory: the server binary's directory.
@@ -306,10 +312,23 @@ final class ProcessManager {
         writeLog("exec: \(resolvedServerPath)\n")
         writeLog("cwd:  \(serverDir)\n")
         if !environmentOverrides.isEmpty {
-            let renderedEnvironment = DS4ServerCommand.managedQwenEnvironmentKeys.compactMap { key in
+            let renderedEnvironment = DS4ServerCommand.environmentKeys.compactMap { key in
                 environmentOverrides[key].map { "\(key)=\($0)" }
             }.joined(separator: " ")
             writeLog("env:  \(renderedEnvironment)\n")
+        }
+        if modelProfile.family == .qwen38 && DS4M4QwenTuning.gpuIsM4 {
+            let reason: String
+            if !m4QwenTuning {
+                reason = "none (ds4-server has its own M4 defaults)"
+            } else if DS4M4QwenTuning.environment(
+                routedExpertTypes: modelProfile.routedExpertTypes
+            ).isEmpty {
+                reason = "none (expert types outside the measured Q4 and Q2 packs)"
+            } else {
+                reason = "M4 Qwen overrides (ds4-server lacks its own M4 defaults)"
+            }
+            writeLog("tune: \(reason)\n")
         }
         writeLog("argv: \(args.joined(separator: " "))\n")
         writeLog("---\n")

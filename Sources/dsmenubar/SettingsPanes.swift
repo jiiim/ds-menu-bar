@@ -67,7 +67,8 @@ extension SettingsView {
                     configuration: draft,
                     modelProfile: modelProfile,
                     supportProfile: supportProfile,
-                    visionProfile: visionProfile
+                    visionProfile: visionProfile,
+                    m4QwenTuning: m4QwenTuning
                 ))
                     .font(.system(.footnote, design: .monospaced))
                     .frame(maxWidth: .infinity, alignment: .leading)

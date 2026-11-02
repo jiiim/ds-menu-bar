@@ -14,15 +14,23 @@ enum DS4ServerCommand {
         "DS4_QWEN4_IMAGE_MAX_TOKENS"
     ]
 
+    /// Every variable a launch can set, in the order logs and previews list
+    /// them.
+    static let environmentKeys = managedQwenEnvironmentKeys + DS4M4QwenTuning.environmentKeys
+
     /// The managed variables to scrub from the child environment for the given
     /// model family.
     ///
-    /// Every `DS4_QWEN4_*` read in ds4 sits on a Qwen3.8-only path (model
+    /// ds4 reads the managed variables only on Qwen3.8 paths (model
     /// validation, Qwen vision encoding, and the Qwen MTP cycle), so known
     /// non-Qwen families inherit them untouched. Unrecognized and support
     /// profiles scrub every managed variable the app knows: it cannot rule out
     /// that a ds4-server it does not match still reads them, and a stale
     /// export must not steer a model the app could not classify.
+    ///
+    /// The M4 tuning variables sit outside this list: a launch that sets them
+    /// replaces inherited values, and other launches pass them through like
+    /// any `DS4_*` export.
     static func managedEnvironmentKeys(for modelProfile: DS4ModelProfile) -> [String] {
         switch modelProfile.family {
         case .qwen38, .unknown, .supportModel:
@@ -32,12 +40,17 @@ enum DS4ServerCommand {
         }
     }
 
+    /// `m4QwenTuning` is `DS4M4QwenTuning.applies(toServerAt:)` for the
+    /// executable being launched.
     static func environmentOverrides(
         configuration: ServerConfiguration.Config,
-        modelProfile: DS4ModelProfile = .unknown
+        modelProfile: DS4ModelProfile = .unknown,
+        m4QwenTuning: Bool = false
     ) -> [String: String] {
         guard modelProfile.family == .qwen38 else { return [:] }
-        var environment: [String: String] = [:]
+        var environment: [String: String] = m4QwenTuning
+            ? DS4M4QwenTuning.environment(routedExpertTypes: modelProfile.routedExpertTypes)
+            : [:]
         if configuration.mtpMode == .embedded && modelProfile.supportsEmbeddedMTP {
             environment["DS4_QWEN4_MTP_DEPTH"] = configuration.qwenMTPDepth.environmentValue
         }
@@ -53,6 +66,7 @@ enum DS4ServerCommand {
     static func launchEnvironment(
         configuration: ServerConfiguration.Config,
         modelProfile: DS4ModelProfile = .unknown,
+        m4QwenTuning: Bool = false,
         inheriting base: [String: String] = ProcessInfo.processInfo.environment
     ) -> [String: String] {
         var environment = base
@@ -61,7 +75,8 @@ enum DS4ServerCommand {
         }
         environment.merge(environmentOverrides(
             configuration: configuration,
-            modelProfile: modelProfile
+            modelProfile: modelProfile,
+            m4QwenTuning: m4QwenTuning
         )) { _, configured in configured }
         return environment
     }
@@ -200,7 +215,8 @@ enum DS4ServerCommand {
         configuration: ServerConfiguration.Config,
         modelProfile: DS4ModelProfile = .unknown,
         supportProfile: DS4SupportProfile = .unavailable,
-        visionProfile: DS4VisionProfile? = nil
+        visionProfile: DS4VisionProfile? = nil,
+        m4QwenTuning: Bool = false
     ) -> String {
         let serverPath = expandingTilde(configuration.serverPath)
         let directory = serverDirectory(for: configuration.serverPath)
@@ -215,10 +231,11 @@ enum DS4ServerCommand {
         )
         let environment = environmentOverrides(
             configuration: configuration,
-            modelProfile: modelProfile
+            modelProfile: modelProfile,
+            m4QwenTuning: m4QwenTuning
         )
         let managedKeys = managedEnvironmentKeys(for: modelProfile)
-        let assignments = managedKeys.compactMap { key -> String? in
+        let assignments = environmentKeys.compactMap { key -> String? in
             guard let value = environment[key] else { return nil }
             return "\(key)=\(shellQuote(value))"
         }

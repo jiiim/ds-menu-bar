@@ -70,14 +70,20 @@ struct SettingsDerivedInputs: Equatable, Hashable {
     // Resource paths in the draft are absolute. Editor text remains separate
     // until Apply, so changing the server directory cannot reinterpret an
     // untouched relative display string.
+    let serverPath: String
     let modelPath: String
     let mtpPath: String
     let visionPath: String
 
     init(_ config: ServerConfiguration.Config) {
+        serverPath = config.serverPath
         modelPath = config.modelPath
         mtpPath = config.mtpPath
         visionPath = config.visionPath
+    }
+
+    func serverDiffers(from other: Self) -> Bool {
+        serverPath != other.serverPath
     }
 
     func modelDiffers(from other: Self) -> Bool {
@@ -97,8 +103,13 @@ struct SettingsFileIdentity: Equatable, Sendable {
     let size: UInt64?
     let modificationDate: Date?
 
+    /// `attributesOfItem` reports a symlink's own size and date, so the path
+    /// is resolved first: a file replaced behind an unchanged link has to
+    /// read as changed, or the profile, validation, or M4 tuning decision
+    /// read from the old file would be kept.
     init(path: String) {
-        let attributes = try? FileManager.default.attributesOfItem(atPath: path)
+        let target = path.isEmpty ? path : URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+        let attributes = try? FileManager.default.attributesOfItem(atPath: target)
         size = (attributes?[.size] as? NSNumber)?.uint64Value
         modificationDate = attributes?[.modificationDate] as? Date
     }
@@ -112,11 +123,13 @@ struct SettingsFileIdentity: Equatable, Sendable {
 }
 
 struct SettingsDerivedFileIdentities: Equatable, Sendable {
+    let server: SettingsFileIdentity
     let model: SettingsFileIdentity
     let support: SettingsFileIdentity
     let vision: SettingsFileIdentity
 
     static let unavailable = Self(
+        server: .unavailable,
         model: .unavailable,
         support: .unavailable,
         vision: .unavailable
@@ -125,6 +138,7 @@ struct SettingsDerivedFileIdentities: Equatable, Sendable {
     static func inspecting(_ config: ServerConfiguration.Config) -> Self {
         let directory = DS4ServerCommand.serverDirectory(for: config.serverPath)
         return Self(
+            server: SettingsFileIdentity(path: DS4ServerCommand.expandingTilde(config.serverPath)),
             model: SettingsFileIdentity(path: DS4ServerCommand.resolving(
                 config.modelPath,
                 relativeTo: directory
@@ -151,6 +165,8 @@ struct SettingsApplyChecks {
     let model: DS4ModelProfile
     let support: DS4SupportProfile
     let vision: DS4VisionProfile
+    /// `DS4M4QwenTuning.applies(toServerAt:)` for the checked executable.
+    let m4QwenTuning: Bool
     let identities: SettingsDerivedFileIdentities
     let mtpIsReadable: Bool
     let visionIsReadable: Bool

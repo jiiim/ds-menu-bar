@@ -17,6 +17,7 @@ struct SettingsView: View {
     @State var modelProfile: DS4ModelProfile
     @State var supportProfile: DS4SupportProfile
     @State var visionProfile: DS4VisionProfile
+    @State var m4QwenTuning: Bool
     @State var loadedModelKey: String
     @State var derivedInputs: SettingsDerivedInputs
     @State var derivedFileIdentities: SettingsDerivedFileIdentities
@@ -58,6 +59,9 @@ struct SettingsView: View {
         _modelProfile = State(initialValue: derived.model)
         _supportProfile = State(initialValue: derived.support)
         _visionProfile = State(initialValue: derived.vision)
+        _m4QwenTuning = State(initialValue: DS4M4QwenTuning.applies(
+            toServerAt: DS4ServerCommand.expandingTilde(snapshot.serverPath)
+        ))
         _loadedModelKey = State(initialValue: ServerConfiguration.Config.modelKey(
             for: snapshot.modelPath,
             serverPath: snapshot.serverPath
@@ -461,6 +465,7 @@ struct SettingsView: View {
         let previousModel = modelProfile
         let previousSupport = supportProfile
         let previousVision = visionProfile
+        let previousM4QwenTuning = m4QwenTuning
         let previousModelError = modelValidationError
         let previousIdentities = derivedFileIdentities
         let previous = SettingsDerivedPrevious(
@@ -469,6 +474,7 @@ struct SettingsView: View {
             modelError: previousModelError,
             support: previousSupport,
             vision: previousVision,
+            m4QwenTuning: previousM4QwenTuning,
             identities: previousIdentities
         )
         let derived = await Task.detached(priority: .userInitiated) {
@@ -510,6 +516,7 @@ struct SettingsView: View {
         modelProfile = derived.model
         supportProfile = derived.support
         visionProfile = derived.vision
+        m4QwenTuning = derived.m4QwenTuning
         modelValidationError = derived.modelError
         validatedModelPath = inputs.modelPath
         derivedInputs = inputs
@@ -733,7 +740,8 @@ struct SettingsView: View {
             configuration: draft,
             modelProfile: modelProfile,
             supportProfile: supportProfile,
-            visionProfile: visionProfile
+            visionProfile: visionProfile,
+            m4QwenTuning: m4QwenTuning
         )
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(command, forType: .string)
@@ -955,6 +963,7 @@ struct SettingsView: View {
             modelProfile = checked.model
             supportProfile = checked.support
             visionProfile = checked.vision
+            m4QwenTuning = checked.m4QwenTuning
             if checked.modelError == nil {
                 // Recomputed from `checkedConfig` for the same reason as the
                 // records above: the key must name the pair actually loaded,

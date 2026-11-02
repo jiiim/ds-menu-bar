@@ -347,6 +347,89 @@ final class ServerCommandTests: XCTestCase {
         }
     }
 
+    func testM4QwenTuningJoinsConfiguredQwenVariables() {
+        let model = DS4ModelProfile(
+            family: .qwen38,
+            architecture: "qwen4exp",
+            nextnPredictLayers: 1,
+            routedExpertTypes: [12, 39]
+        )
+        var config = ServerConfiguration.Config()
+        config.mtpMode = .embedded
+        config.qwenMTPDepth = .twoDrafts
+
+        let tuned = DS4ServerCommand.environmentOverrides(
+            configuration: config,
+            modelProfile: model,
+            m4QwenTuning: true
+        )
+        XCTAssertEqual(
+            tuned,
+            DS4M4QwenTuning.environment(routedExpertTypes: [12, 39])
+                .merging(["DS4_QWEN4_MTP_DEPTH": "3"]) { current, _ in current }
+        )
+        XCTAssertEqual(
+            DS4ServerCommand.environmentOverrides(configuration: config, modelProfile: model),
+            ["DS4_QWEN4_MTP_DEPTH": "3"]
+        )
+
+        let preview = DS4ServerCommand.preview(
+            configuration: config,
+            modelProfile: model,
+            m4QwenTuning: true
+        )
+        for (key, value) in tuned {
+            XCTAssertTrue(preview.contains("\(key)=\(value)"), key)
+        }
+        XCTAssertEqual(Set(tuned.keys).subtracting(DS4ServerCommand.environmentKeys), [])
+    }
+
+    func testM4QwenTuningReachesOnlyQwenLaunches() {
+        let config = ServerConfiguration.Config()
+        for architecture in ["glm5-next", "deepseek4", "deepseek41"] {
+            var model = DS4ModelProfile.from(architecture: architecture)
+            model.routedExpertTypes = [12, 39]
+            XCTAssertTrue(DS4ServerCommand.environmentOverrides(
+                configuration: config,
+                modelProfile: model,
+                m4QwenTuning: true
+            ).isEmpty, architecture)
+        }
+        XCTAssertTrue(DS4ServerCommand.environmentOverrides(
+            configuration: config,
+            modelProfile: .unknown,
+            m4QwenTuning: true
+        ).isEmpty)
+    }
+
+    func testM4QwenTuningReplacesInheritedValuesOnlyWhenItApplies() {
+        let model = DS4ModelProfile(
+            family: .qwen38,
+            architecture: "qwen4exp",
+            routedExpertTypes: [12, 39]
+        )
+        let config = ServerConfiguration.Config()
+        let inherited = ["DS4_QWEN4_MOE_TAILS": "0", "PATH": "/bin"]
+
+        let tuned = DS4ServerCommand.launchEnvironment(
+            configuration: config,
+            modelProfile: model,
+            m4QwenTuning: true,
+            inheriting: inherited
+        )
+        XCTAssertEqual(tuned["DS4_QWEN4_MOE_TAILS"], "1")
+        XCTAssertEqual(tuned["PATH"], "/bin")
+
+        // Not a managed variable: without the tuning an export reaches ds4
+        // as it was, the same as any other DS4_* the app does not set.
+        let untuned = DS4ServerCommand.launchEnvironment(
+            configuration: config,
+            modelProfile: model,
+            inheriting: inherited
+        )
+        XCTAssertEqual(untuned, inherited)
+    }
+
     func testUnrecognizedProfilesScrubEveryManagedVariable() {
         let profiles: [DS4ModelProfile] = [
             .unknown,
