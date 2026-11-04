@@ -355,10 +355,10 @@ struct DS4TuningProfile: Codable, Equatable {
             // Coding agents need the native 262,144-token context. On 96 GB
             // the Q2 pack plans 55.84 GiB there at a 4,096 chunk; on 64 GB
             // its 53.11 GiB at 2,048 exceeds the default GPU working set.
-            if memoryGiB >= 96 { profile.ctxSize = 262_144 }
             if memoryGiB >= 128 {
                 profile.prefillChunk = 0
             } else if memoryGiB >= 96 {
+                profile.ctxSize = 262_144
                 profile.prefillChunk = 4_096
             } else {
                 profile.prefillChunk = 2_048
