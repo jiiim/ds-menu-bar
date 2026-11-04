@@ -318,11 +318,14 @@ extension SettingsView {
 
             Section {
                 VStack(alignment: .leading, spacing: 4) {
-                    if modelProfile.supportsSSDStreaming {
+                    if modelProfile.supportsSSDStreaming(on: launchTarget) {
                         Toggle("Use SSD-backed model streaming", isOn: $draft.ssdStreamingEnabled)
                     } else {
                         LabeledContent("SSD-backed model streaming") {
-                            Text("Unavailable for \(modelProfile.displayName)").foregroundStyle(.secondary)
+                            Text(modelProfile.family == .qwen38
+                                 ? "Unavailable with this ds4-server"
+                                 : "Unavailable for \(modelProfile.displayName)")
+                                .foregroundStyle(.secondary)
                         }
                     }
                     Text(modelProfile.isFullGLM
@@ -334,11 +337,13 @@ extension SettingsView {
                         validationLabel(error, for: .ssdStreamingEnabled)
                     }
                 }
-                if !modelProfile.supportsSSDStreaming && draft.ssdStreamingEnabled {
+                if !modelProfile.supportsSSDStreaming(on: launchTarget) && draft.ssdStreamingEnabled {
                     Button("Turn Off SSD Streaming") { draft.ssdStreamingEnabled = false }
                 }
                 if draft.ssdStreamingEnabled {
-                    Toggle("Skip the default expert-cache preload", isOn: $draft.ssdStreamingCold)
+                    if !modelProfile.fillsSSDExpertCacheOnDemand {
+                        Toggle("Skip the default expert-cache preload", isOn: $draft.ssdStreamingCold)
+                    }
                     textRow(
                         "Expert cache override",
                         text: $draft.ssdStreamingCacheExperts,
@@ -353,12 +358,14 @@ extension SettingsView {
                             note: "-1 uses Automatic; 0 disables full-layer residency."
                         )
                     }
-                    integerRow(
-                        "Preloaded experts",
-                        value: $draft.ssdStreamingPreloadExperts,
-                        errorKey: .ssdStreamingPreloadExperts,
-                        note: "0 uses Automatic."
-                    )
+                    if !modelProfile.fillsSSDExpertCacheOnDemand {
+                        integerRow(
+                            "Preloaded experts",
+                            value: $draft.ssdStreamingPreloadExperts,
+                            errorKey: .ssdStreamingPreloadExperts,
+                            note: "0 uses Automatic."
+                        )
+                    }
                 }
             } header: {
                 Text("SSD streaming")

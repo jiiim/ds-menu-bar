@@ -133,9 +133,9 @@ enum DS4ServerCommand {
             }
         }
 
-        if configuration.ssdStreamingEnabled && modelProfile.supportsSSDStreaming {
+        if configuration.ssdStreamingEnabled && modelProfile.supportsSSDStreaming(on: target) {
             args.append("--ssd-streaming")
-            if configuration.ssdStreamingCold {
+            if configuration.ssdStreamingCold && !modelProfile.fillsSSDExpertCacheOnDemand {
                 args.append("--ssd-streaming-cold")
             }
             let cacheExperts = configuration.ssdStreamingCacheExperts
@@ -146,7 +146,7 @@ enum DS4ServerCommand {
             if modelProfile.isFullGLM && configuration.ssdStreamingFullLayers >= 0 {
                 args += ["--ssd-streaming-full-layers", "\(configuration.ssdStreamingFullLayers)"]
             }
-            if configuration.ssdStreamingPreloadExperts > 0 {
+            if configuration.ssdStreamingPreloadExperts > 0 && !modelProfile.fillsSSDExpertCacheOnDemand {
                 args += ["--ssd-streaming-preload-experts", "\(configuration.ssdStreamingPreloadExperts)"]
             }
         }

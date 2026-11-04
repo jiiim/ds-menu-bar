@@ -148,7 +148,14 @@ struct DS4ModelProfile: Equatable {
         family == .glm53Flash || family == .deepSeek41 || family == .qwen38 ||
             isFlashVisionExperimental
     }
-    var supportsSSDStreaming: Bool { family != .qwen38 }
+    /// Qwen streams routed experts only on ds4-server builds that have it.
+    func supportsSSDStreaming(on target: DS4LaunchTarget) -> Bool {
+        family != .qwen38 || target.serverStreamsQwenExperts
+    }
+    /// Qwen fills its expert cache on demand: ds4 refuses full resident
+    /// layers and preloaded experts for it and reads the cold option only on
+    /// the DeepSeek and GLM paths.
+    var fillsSSDExpertCacheOnDemand: Bool { family == .qwen38 }
     var supportsManualPrefill: Bool { family == .deepSeek || family == .qwen38 || family == .unknown }
     var requiresFullPower: Bool {
         switch family {

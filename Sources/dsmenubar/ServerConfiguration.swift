@@ -797,8 +797,10 @@ extension ServerConfiguration.Config {
         }
 
         if ssdStreamingEnabled {
-            if modelProfile.isKnown && !modelProfile.supportsSSDStreaming {
-                errors[.ssdStreamingEnabled] = "SSD streaming is not supported for \(modelProfile.displayName)"
+            if modelProfile.isKnown && !modelProfile.supportsSSDStreaming(on: launchTarget) {
+                errors[.ssdStreamingEnabled] = modelProfile.family == .qwen38
+                    ? "This ds4-server cannot stream \(modelProfile.displayName) from SSD; update ds4-server or turn off SSD streaming"
+                    : "SSD streaming is not supported for \(modelProfile.displayName)"
             }
             if !ssdStreamingCacheExperts.isEmpty,
                let constraint = numericTextConstraint(for: .ssdStreamingCacheExperts, modelProfile: modelProfile),
@@ -808,7 +810,9 @@ extension ServerConfiguration.Config {
             if modelProfile.isFullGLM {
                 bounded(ssdStreamingFullLayers, field: .ssdStreamingFullLayers, label: "Full resident layers")
             }
-            bounded(ssdStreamingPreloadExperts, field: .ssdStreamingPreloadExperts, label: "Preloaded experts")
+            if !modelProfile.fillsSSDExpertCacheOnDemand {
+                bounded(ssdStreamingPreloadExperts, field: .ssdStreamingPreloadExperts, label: "Preloaded experts")
+            }
         }
 
         let usesSSDIncompatibleSupport =

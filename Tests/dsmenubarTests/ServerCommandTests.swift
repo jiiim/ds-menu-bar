@@ -194,7 +194,8 @@ final class ServerCommandTests: XCTestCase {
         XCTAssertNotNil(config.validationErrors(modelProfile: model)[.prefillChunk])
         config.prefillChunk = 1_024
         config.ssdStreamingEnabled = true
-        XCTAssertNotNil(config.validationErrors(modelProfile: model)[.ssdStreamingEnabled])
+        // Uninspected, a ds4-server is not assumed to stream Qwen.
+        XCTAssertNotNil(config.validationErrors(modelProfile: model, launchTarget: .unknown)[.ssdStreamingEnabled])
     }
 
     func testDefaultsScaleWithUnifiedMemory() {
@@ -435,6 +436,71 @@ final class ServerCommandTests: XCTestCase {
             inheriting: inherited
         )
         XCTAssertEqual(untuned, inherited)
+    }
+
+    func testQwenSSDStreamingFollowsTheServerBuild() {
+        let model = DS4ModelProfile(family: .qwen38, architecture: "qwen4exp", nextnPredictLayers: 1)
+        var streaming = stockM4Target
+        streaming.serverStreamsQwenExperts = true
+        var config = ServerConfiguration.Config()
+        config.ssdStreamingEnabled = true
+        config.ssdStreamingCold = true
+        config.ssdStreamingCacheExperts = "40GB"
+        config.ssdStreamingPreloadExperts = 512
+        config.ssdStreamingFullLayers = 4
+
+        // ds4 refuses preloaded experts and full layers for Qwen, and a
+        // build without Qwen streaming must not receive the flag at all.
+        let args = DS4ServerCommand.arguments(
+            configuration: config,
+            resolvedModelPath: "/tmp/qwen.gguf",
+            resolvedMTPPath: "",
+            modelProfile: model,
+            target: streaming
+        )
+        XCTAssertTrue(args.contains("--ssd-streaming"))
+        XCTAssertEqual(args[args.firstIndex(of: "--ssd-streaming-cache-experts")! + 1], "40GB")
+        for flag in ["--ssd-streaming-cold", "--ssd-streaming-preload-experts", "--ssd-streaming-full-layers"] {
+            XCTAssertFalse(args.contains(flag), flag)
+        }
+        XCTAssertNil(config.validationErrors(modelProfile: model, launchTarget: streaming)[.ssdStreamingEnabled])
+
+        XCTAssertFalse(DS4ServerCommand.arguments(
+            configuration: config,
+            resolvedModelPath: "/tmp/qwen.gguf",
+            resolvedMTPPath: "",
+            modelProfile: model,
+            target: stockM4Target
+        ).contains("--ssd-streaming"))
+        XCTAssertNotNil(config.validationErrors(modelProfile: model, launchTarget: stockM4Target)[.ssdStreamingEnabled])
+    }
+
+    func testQwenValidationSkipsTheHiddenPreloadField() {
+        let model = DS4ModelProfile(family: .qwen38, architecture: "qwen4exp")
+        var streaming = stockM4Target
+        streaming.serverStreamsQwenExperts = true
+        var config = ServerConfiguration.Config()
+        config.ssdStreamingEnabled = true
+        config.ssdStreamingPreloadExperts = -1
+
+        XCTAssertNil(config.validationErrors(modelProfile: model, launchTarget: streaming)[.ssdStreamingPreloadExperts])
+        XCTAssertNotNil(config.validationErrors(modelProfile: .from(architecture: "glm5-next"))[.ssdStreamingPreloadExperts])
+    }
+
+    func testOtherFamiliesKeepEverySSDStreamingOption() {
+        var config = ServerConfiguration.Config()
+        config.ssdStreamingEnabled = true
+        config.ssdStreamingCold = true
+        config.ssdStreamingPreloadExperts = 512
+        let args = DS4ServerCommand.arguments(
+            configuration: config,
+            resolvedModelPath: "/tmp/glm.gguf",
+            resolvedMTPPath: "",
+            modelProfile: .from(architecture: "glm5-next")
+        )
+        for flag in ["--ssd-streaming", "--ssd-streaming-cold", "--ssd-streaming-preload-experts"] {
+            XCTAssertTrue(args.contains(flag), flag)
+        }
     }
 
     func testUnrecognizedProfilesScrubEveryManagedVariable() {
