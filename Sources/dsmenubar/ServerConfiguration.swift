@@ -487,9 +487,29 @@ struct DS4DecimalConstraint: Equatable {
     }
 }
 
+/// The app's text is English, so numbers read one way on every Mac: commas
+/// and ASCII digits, whatever the region. Limits in hints and errors, the
+/// fields they describe, and the strings written into the app all agree.
+extension Locale {
+    static let settingsNumbers = Locale(identifier: "en_US")
+}
+
+extension BinaryInteger {
+    var groupedText: String {
+        formatted(IntegerFormatStyle<Self>(locale: .settingsNumbers))
+    }
+}
+
+extension Double {
+    var groupedText: String {
+        formatted(FloatingPointFormatStyle<Double>.number.locale(.settingsNumbers))
+    }
+}
+
 /// Shows a numeric text setting with digit grouping while the configuration
-/// keeps what ds4 receives, as `.number` does for the integer settings. Text
-/// that does not begin with a number is left for validation to report.
+/// keeps what ds4 receives, as `DS4IntegerTextStyle` does for the integer
+/// settings. Text that does not begin with a number is left for validation
+/// to report.
 struct DS4GroupedNumericTextStyle: ParseableFormatStyle {
     struct Strategy: ParseStrategy {
         func parse(_ value: String) -> String {
@@ -503,13 +523,14 @@ struct DS4GroupedNumericTextStyle: ParseableFormatStyle {
         let text = DS4NumericTextConstraint.commandLineText(value)
         let digits = text.prefix { $0.isASCII && $0.isNumber }
         guard let number = UInt64(digits) else { return value }
-        return number.formatted() + text.dropFirst(digits.count)
+        return number.groupedText + text.dropFirst(digits.count)
     }
 }
 
-/// Shows an identifier such as a port without grouping, and reads one typed
-/// with it: `.number` stops at the first separator, turning 8,000 into 8.
-struct DS4UngroupedIntegerStyle: ParseableFormatStyle {
+/// An integer setting, grouped unless it is an identifier such as a port. Text
+/// that is not a whole number is refused: `.number` stops at the first
+/// character it cannot read, turning 8.192 into 8.
+struct DS4IntegerTextStyle: ParseableFormatStyle {
     struct Strategy: ParseStrategy {
         func parse(_ value: String) throws -> Int {
             guard let number = Int(DS4NumericTextConstraint.commandLineText(value)) else {
@@ -519,20 +540,29 @@ struct DS4UngroupedIntegerStyle: ParseableFormatStyle {
         }
     }
 
+    var grouped = true
     var parseStrategy: Strategy { Strategy() }
 
-    func format(_ value: Int) -> String { String(value) }
+    func format(_ value: Int) -> String {
+        grouped ? value.groupedText : String(value)
+    }
 }
 
 struct DS4NumericTextConstraint: Equatable {
-    /// The text ds4 receives. Limits are shown with digit grouping, so a value
-    /// typed the same way is accepted; ds4's parsers take digits only. A
-    /// budget's suffix is always spelled `GB`.
+    /// The text ds4 receives, whose parsers take ASCII digits only. Limits
+    /// are shown with commas, so a value typed the same way is accepted, as
+    /// are digits from another script. A budget's suffix is always `GB`.
     static func commandLineText(_ value: String) -> String {
-        var text = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        for separator in [",", Locale.current.groupingSeparator ?? ","] {
-            text = text.replacingOccurrences(of: separator, with: "")
+        var scalars = String.UnicodeScalarView()
+        for scalar in value.trimmingCharacters(in: .whitespacesAndNewlines).unicodeScalars where scalar != "," {
+            if scalar.properties.generalCategory == .decimalNumber,
+               let digit = scalar.properties.numericValue {
+                scalars.append(Unicode.Scalar(UInt8(48 + Int(digit))))
+            } else {
+                scalars.append(scalar)
+            }
         }
+        var text = String(scalars)
         if text.lowercased().hasSuffix("gb") {
             text = text.dropLast(2) + "GB"
         }
@@ -575,12 +605,12 @@ struct DS4NumericTextConstraint: Equatable {
     var rangeDescription: String {
         switch syntax {
         case .gib:
-            return "Valid range: 1–\(gibMaximum.formatted()) GiB"
+            return "Valid range: 1–\(gibMaximum.groupedText) GiB"
         case .expertCountOrGiB:
             let count = countMaximum ?? DS4ConfigurationLimits.maxParserUnsignedInteger
-            return "Valid range: 1–\(count.formatted()) experts, or 1–\(gibMaximum.formatted())GB"
+            return "Valid range: 1–\(count.groupedText) experts, or 1–\(gibMaximum.groupedText)GB"
         case .unsignedInteger:
-            return "Valid range: 0–\((countMaximum ?? UInt64.max).formatted())"
+            return "Valid range: 0–\((countMaximum ?? UInt64.max).groupedText)"
         }
     }
 
@@ -812,7 +842,7 @@ extension ServerConfiguration.Config {
             guard let constraint = integerConstraint(for: field, modelProfile: modelProfile),
                   !constraint.contains(value) else { return }
             // Numbers are grouped everywhere but a port, which is an identifier.
-            let text = { (number: Int) in field == .port ? String(number) : number.formatted() }
+            let text = { (number: Int) in field == .port ? String(number) : number.groupedText }
             if constraint.minimum == constraint.maximum {
                 errors[field] = "\(label) must be \(text(constraint.minimum))"
             } else {
@@ -944,7 +974,7 @@ extension ServerConfiguration.Config {
                     }
                     bounded(mtpDraft, field: .mtpDraft, label: "MTP draft tokens")
                     if let constraint = decimalConstraint(for: .mtpMargin), !constraint.contains(mtpMargin) {
-                        errors[.mtpMargin] = "MTP margin must be between \(constraint.minimum.formatted()) and \(constraint.maximum.formatted())"
+                        errors[.mtpMargin] = "MTP margin must be between \(constraint.minimum.groupedText) and \(constraint.maximum.groupedText)"
                     }
                 }
             case .dspark:
@@ -979,7 +1009,7 @@ extension ServerConfiguration.Config {
                     if let confidence = dsparkConfidence,
                        let constraint = decimalConstraint(for: .dsparkConfidence),
                        !constraint.contains(confidence) {
-                        errors[.dsparkConfidence] = "DSpark confidence must be between \(constraint.minimum.formatted()) and \(constraint.maximum.formatted())"
+                        errors[.dsparkConfidence] = "DSpark confidence must be between \(constraint.minimum.groupedText) and \(constraint.maximum.groupedText)"
                     }
                 }
             }

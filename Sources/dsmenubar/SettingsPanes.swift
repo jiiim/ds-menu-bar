@@ -567,7 +567,7 @@ extension SettingsView {
             .frame(width: 100)
         }
         if let constraint {
-            Text("Valid range: \(constraint.minimum.formatted())–\(constraint.maximum.formatted())")
+            Text("Valid range: \(constraint.minimum.groupedText)–\(constraint.maximum.groupedText)")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
@@ -752,20 +752,14 @@ extension SettingsView {
         grouped: Bool = true
     ) -> some View {
         let constraint = draft.integerConstraint(for: errorKey, modelProfile: modelProfile)
-        let text = { (number: Int) in grouped ? number.formatted() : String(number) }
+        let text = { (number: Int) in grouped ? number.groupedText : String(number) }
         VStack(alignment: .leading, spacing: 4) {
             LabeledContent(title) {
-                Group {
-                    if grouped {
-                        TextField("", value: value, format: .number)
-                    } else {
-                        TextField("", value: value, format: DS4UngroupedIntegerStyle())
-                    }
-                }
-                .textFieldStyle(.roundedBorder)
-                .multilineTextAlignment(.trailing)
-                .frame(width: 150)
-                .accessibilityLabel(title)
+                TextField("", value: value, format: DS4IntegerTextStyle(grouped: grouped))
+                    .textFieldStyle(.roundedBorder)
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 150)
+                    .accessibilityLabel(title)
             }
             if let note {
                 Text(note).font(.footnote).foregroundStyle(.secondary)
@@ -795,7 +789,9 @@ extension SettingsView {
         let constraint = draft.decimalConstraint(for: errorKey)
         VStack(alignment: .leading, spacing: 4) {
             LabeledContent(title) {
-                TextField("", value: value, format: .number.precision(.fractionLength(0...3)))
+                TextField("", value: value, format: FloatingPointFormatStyle<Double>.number
+                    .precision(.fractionLength(0...3))
+                    .locale(.settingsNumbers))
                     .textFieldStyle(.roundedBorder)
                     .multilineTextAlignment(.trailing)
                     .frame(width: 150)
@@ -805,7 +801,7 @@ extension SettingsView {
                 Text(note).font(.footnote).foregroundStyle(.secondary)
             }
             if let constraint {
-                Text("Valid range: \(constraint.minimum.formatted())–\(constraint.maximum.formatted())")
+                Text("Valid range: \(constraint.minimum.groupedText)–\(constraint.maximum.groupedText)")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }

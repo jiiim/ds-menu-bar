@@ -509,10 +509,9 @@ final class ServerCommandTests: XCTestCase {
 
     func testNumericTextIsShownGroupedAndStoredForDS4() {
         let style = DS4GroupedNumericTextStyle()
-        let thousand = 1_111.formatted()
-        XCTAssertEqual(style.format("111,1gb"), "\(thousand)GB")
-        XCTAssertEqual(style.format("1111gB"), "\(thousand)GB")
-        XCTAssertEqual(style.format("1111"), thousand)
+        XCTAssertEqual(style.format("111,1gb"), "1,111GB")
+        XCTAssertEqual(style.format("1111gB"), "1,111GB")
+        XCTAssertEqual(style.format("1111"), "1,111")
         XCTAssertEqual(style.format("40GB"), "40GB")
         XCTAssertEqual(style.format(""), "")
         XCTAssertEqual(style.format("lots"), "lots")
@@ -520,13 +519,31 @@ final class ServerCommandTests: XCTestCase {
         XCTAssertEqual(style.parseStrategy.parse(style.format("24576")), "24576")
     }
 
-    func testPortIsShownWithoutCommasAndAcceptsThem() throws {
-        let style = DS4UngroupedIntegerStyle()
-        XCTAssertEqual(style.format(8_000), "8000")
-        XCTAssertEqual(try style.parseStrategy.parse("8,000"), 8_000)
-        XCTAssertEqual(try style.parseStrategy.parse(" 65,535 "), 65_535)
-        XCTAssertEqual(try style.parseStrategy.parse("8000"), 8_000)
-        XCTAssertThrowsError(try style.parseStrategy.parse("eight"))
+    func testDigitsFromOtherScriptsReachDS4AsASCII() {
+        XCTAssertEqual(DS4NumericTextConstraint.commandLineText("١١١١GB"), "1111GB")
+        XCTAssertEqual(DS4NumericTextConstraint.commandLineText("۱۱۱۱"), "1111")
+        XCTAssertEqual(DS4GroupedNumericTextStyle().format("١١١١gb"), "1,111GB")
+        XCTAssertEqual(try? DS4IntegerTextStyle().parseStrategy.parse("٨٠٠٠"), 8_000)
+    }
+
+    func testIntegerFieldsGroupExceptAPortAndRefuseWhatIsNotAWholeNumber() throws {
+        let grouped = DS4IntegerTextStyle()
+        let port = DS4IntegerTextStyle(grouped: false)
+        XCTAssertEqual(grouped.format(262_144), "262,144")
+        XCTAssertEqual(port.format(8_000), "8000")
+        XCTAssertEqual(grouped.format(-1), "-1")
+        XCTAssertEqual(try port.parseStrategy.parse("8,000"), 8_000)
+        XCTAssertEqual(try port.parseStrategy.parse(" 65,535 "), 65_535)
+        XCTAssertEqual(try grouped.parseStrategy.parse("-1"), -1)
+        XCTAssertThrowsError(try port.parseStrategy.parse("eight"))
+        // A region's own grouping must not read as the first group alone.
+        XCTAssertThrowsError(try grouped.parseStrategy.parse("8.192"))
+    }
+
+    func testNumbersUseOneFormatInEveryRegion() {
+        XCTAssertEqual(1_234_567.groupedText, "1,234,567")
+        XCTAssertEqual(UInt64(24_576).groupedText, "24,576")
+        XCTAssertEqual(1_000.0.groupedText, "1,000")
     }
 
     func testRangeErrorsGroupEveryNumberButAPort() throws {
@@ -538,7 +555,7 @@ final class ServerCommandTests: XCTestCase {
         XCTAssertTrue(port.hasSuffix("65535"), port)
         let context = try XCTUnwrap(errors[.ctxSize])
         let maximum = try XCTUnwrap(config.integerConstraint(for: .ctxSize)?.maximum)
-        XCTAssertTrue(context.hasSuffix(maximum.formatted()), context)
+        XCTAssertTrue(context.hasSuffix(maximum.groupedText), context)
     }
 
     func testRangeErrorsKeepTheCaseOfTheirUnits() throws {
