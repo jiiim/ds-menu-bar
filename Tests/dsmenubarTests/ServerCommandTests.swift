@@ -215,7 +215,7 @@ final class ServerCommandTests: XCTestCase {
 
         XCTAssertEqual(compactQwen.ctxSize, 131_072)
         XCTAssertEqual(compactQwen.prefillChunk, 2_048)
-        XCTAssertEqual(middleQwen.ctxSize, 131_072)
+        XCTAssertEqual(middleQwen.ctxSize, 262_144)
         XCTAssertEqual(middleQwen.prefillChunk, 4_096)
         XCTAssertEqual(largeQwen.ctxSize, 262_144)
         XCTAssertEqual(largeQwen.prefillChunk, 0)
