@@ -19,9 +19,9 @@ struct SettingsDerivedResult {
     let modelError: String?
     let support: DS4SupportProfile
     let vision: DS4VisionProfile
-    /// Whether a launch of the selected executable takes the M4 Qwen
-    /// overrides, so the command preview shows what a launch would set.
-    let m4QwenTuning: Bool
+    /// What the selected executable supports, so the command preview and
+    /// validation match what a launch of it would do.
+    let launchTarget: DS4LaunchTarget
     let identities: SettingsDerivedFileIdentities
 }
 
@@ -33,7 +33,7 @@ struct SettingsDerivedPrevious {
     let modelError: String?
     let support: DS4SupportProfile
     let vision: DS4VisionProfile
-    let m4QwenTuning: Bool
+    let launchTarget: DS4LaunchTarget
     let identities: SettingsDerivedFileIdentities
 }
 
@@ -116,10 +116,10 @@ enum SettingsDerivedRefresh {
                 identities.vision != previous.identities.vision
                 ? GGUFModelInspector.visionProfile(for: config.visionPath, relativeTo: directory)
                 : previous.vision,
-            m4QwenTuning: forceRefresh || inputs.serverDiffers(from: previous.inputs) ||
+            launchTarget: forceRefresh || inputs.serverDiffers(from: previous.inputs) ||
                 identities.server != previous.identities.server
-                ? DS4M4QwenTuning.applies(toServerAt: DS4ServerCommand.expandingTilde(config.serverPath))
-                : previous.m4QwenTuning,
+                ? DS4LaunchTarget.inspecting(serverPath: DS4ServerCommand.expandingTilde(config.serverPath))
+                : previous.launchTarget,
             identities: identities
         )
     }
@@ -179,8 +179,8 @@ extension SettingsApplyChecks {
                 for: candidate.visionPath,
                 relativeTo: directory
             ),
-            m4QwenTuning: DS4M4QwenTuning.applies(
-                toServerAt: DS4ServerCommand.expandingTilde(candidate.serverPath)
+            launchTarget: DS4LaunchTarget.inspecting(
+                serverPath: DS4ServerCommand.expandingTilde(candidate.serverPath)
             ),
             identities: SettingsDerivedFileIdentities.inspecting(candidate),
             mtpIsReadable: FileManager.default.isReadableRegularFile(atPath:
@@ -213,7 +213,7 @@ extension SettingsApplyChecks {
                 for: restoredConfig.visionPath,
                 relativeTo: directory
             ),
-            m4QwenTuning: m4QwenTuning,
+            launchTarget: launchTarget,
             identities: SettingsDerivedFileIdentities.inspecting(restoredConfig),
             mtpIsReadable: FileManager.default.isReadableRegularFile(atPath:
                 DS4ServerCommand.resolving(restoredConfig.mtpPath, relativeTo: directory)

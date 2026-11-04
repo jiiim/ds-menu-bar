@@ -52,8 +52,8 @@ model files.
 - Detects supported DwarfStar GGUF model families and validates related files
   before starting the server.
 - On M4 Macs, turns on the Qwen3.8 Flash Next Metal kernel choices that
-  DwarfStar makes by default on M3 Ultra and M5, when the selected
-  `ds4-server` does not already make them on M4.
+  DwarfStar makes by default on M3 Ultra and M5, matched to what the selected
+  `ds4-server` already does on M4.
 - Captures server output in a rotating log that can be opened in Console.
 - Can optionally record a request trace for diagnostics.
 - Can keep the Mac awake while the server runs, when it is connected to a

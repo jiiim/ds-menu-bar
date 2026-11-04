@@ -165,8 +165,8 @@ struct SettingsApplyChecks {
     let model: DS4ModelProfile
     let support: DS4SupportProfile
     let vision: DS4VisionProfile
-    /// `DS4M4QwenTuning.applies(toServerAt:)` for the checked executable.
-    let m4QwenTuning: Bool
+    /// `DS4LaunchTarget.inspecting(serverPath:)` for the checked executable.
+    let launchTarget: DS4LaunchTarget
     let identities: SettingsDerivedFileIdentities
     let mtpIsReadable: Bool
     let visionIsReadable: Bool

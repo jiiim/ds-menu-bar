@@ -17,7 +17,7 @@ struct SettingsView: View {
     @State var modelProfile: DS4ModelProfile
     @State var supportProfile: DS4SupportProfile
     @State var visionProfile: DS4VisionProfile
-    @State var m4QwenTuning: Bool
+    @State var launchTarget: DS4LaunchTarget
     @State var loadedModelKey: String
     @State var derivedInputs: SettingsDerivedInputs
     @State var derivedFileIdentities: SettingsDerivedFileIdentities
@@ -59,9 +59,10 @@ struct SettingsView: View {
         _modelProfile = State(initialValue: derived.model)
         _supportProfile = State(initialValue: derived.support)
         _visionProfile = State(initialValue: derived.vision)
-        _m4QwenTuning = State(initialValue: DS4M4QwenTuning.applies(
-            toServerAt: DS4ServerCommand.expandingTilde(snapshot.serverPath)
-        ))
+        let initialTarget = DS4LaunchTarget.inspecting(
+            serverPath: DS4ServerCommand.expandingTilde(snapshot.serverPath)
+        )
+        _launchTarget = State(initialValue: initialTarget)
         _loadedModelKey = State(initialValue: ServerConfiguration.Config.modelKey(
             for: snapshot.modelPath,
             serverPath: snapshot.serverPath
@@ -73,7 +74,8 @@ struct SettingsView: View {
         _validationErrors = State(initialValue: snapshot.validationErrors(
             modelProfile: derived.model,
             supportProfile: derived.support,
-            visionProfile: derived.vision
+            visionProfile: derived.vision,
+            launchTarget: initialTarget
         ))
         _serverValidationError = State(initialValue: nil)
         _modelValidationError = State(initialValue: nil)
@@ -391,12 +393,14 @@ struct SettingsView: View {
         for config: ServerConfiguration.Config,
         model: DS4ModelProfile? = nil,
         support: DS4SupportProfile? = nil,
-        vision: DS4VisionProfile? = nil
+        vision: DS4VisionProfile? = nil,
+        target: DS4LaunchTarget? = nil
     ) -> [ServerConfiguration.Config.Field: String] {
         var errors = config.validationErrors(
             modelProfile: model ?? modelProfile,
             supportProfile: support ?? supportProfile,
-            visionProfile: vision ?? visionProfile
+            visionProfile: vision ?? visionProfile,
+            launchTarget: target ?? launchTarget
         )
         if config.serverPath == validatedServerPath, let serverValidationError {
             errors[.serverPath] = serverValidationError
@@ -465,7 +469,7 @@ struct SettingsView: View {
         let previousModel = modelProfile
         let previousSupport = supportProfile
         let previousVision = visionProfile
-        let previousM4QwenTuning = m4QwenTuning
+        let previousLaunchTarget = launchTarget
         let previousModelError = modelValidationError
         let previousIdentities = derivedFileIdentities
         let previous = SettingsDerivedPrevious(
@@ -474,7 +478,7 @@ struct SettingsView: View {
             modelError: previousModelError,
             support: previousSupport,
             vision: previousVision,
-            m4QwenTuning: previousM4QwenTuning,
+            launchTarget: previousLaunchTarget,
             identities: previousIdentities
         )
         let derived = await Task.detached(priority: .userInitiated) {
@@ -516,7 +520,7 @@ struct SettingsView: View {
         modelProfile = derived.model
         supportProfile = derived.support
         visionProfile = derived.vision
-        m4QwenTuning = derived.m4QwenTuning
+        launchTarget = derived.launchTarget
         modelValidationError = derived.modelError
         validatedModelPath = inputs.modelPath
         derivedInputs = inputs
@@ -529,7 +533,8 @@ struct SettingsView: View {
             for: refreshedConfig,
             model: derived.model,
             support: derived.support,
-            vision: derived.vision
+            vision: derived.vision,
+            target: derived.launchTarget
         )
         isRefreshingDerivedState = false
     }
@@ -741,7 +746,7 @@ struct SettingsView: View {
             modelProfile: modelProfile,
             supportProfile: supportProfile,
             visionProfile: visionProfile,
-            m4QwenTuning: m4QwenTuning
+            target: launchTarget
         )
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(command, forType: .string)
@@ -912,7 +917,8 @@ struct SettingsView: View {
             var errors = checkedConfig.validationErrors(
                 modelProfile: checked.model,
                 supportProfile: checked.support,
-                visionProfile: checked.vision
+                visionProfile: checked.vision,
+                launchTarget: checked.launchTarget
             )
             if let error = checked.serverError {
                 errors[.serverPath] = error
@@ -963,7 +969,7 @@ struct SettingsView: View {
             modelProfile = checked.model
             supportProfile = checked.support
             visionProfile = checked.vision
-            m4QwenTuning = checked.m4QwenTuning
+            launchTarget = checked.launchTarget
             if checked.modelError == nil {
                 // Recomputed from `checkedConfig` for the same reason as the
                 // records above: the key must name the pair actually loaded,
@@ -990,7 +996,8 @@ struct SettingsView: View {
                 inspected: ServerManager.InspectedProfiles(
                     model: checked.model,
                     support: checked.support,
-                    vision: checked.vision
+                    vision: checked.vision,
+                    launchTarget: checked.launchTarget
                 ),
                 history: history
             )

@@ -51,7 +51,7 @@ final class SettingsDerivedStateTests: XCTestCase {
     private func previous(
         for config: ServerConfiguration.Config,
         model: DS4ModelProfile,
-        m4QwenTuning: Bool = false
+        launchTarget: DS4LaunchTarget = .unknown
     ) -> SettingsDerivedPrevious {
         SettingsDerivedPrevious(
             inputs: SettingsDerivedInputs(config),
@@ -63,7 +63,7 @@ final class SettingsDerivedStateTests: XCTestCase {
                 architecture: nil,
                 projectionDimension: nil
             ),
-            m4QwenTuning: m4QwenTuning,
+            launchTarget: launchTarget,
             identities: SettingsDerivedFileIdentities.inspecting(config)
         )
     }
@@ -124,21 +124,28 @@ final class SettingsDerivedStateTests: XCTestCase {
         )
     }
 
-    func testUnchangedExecutableReusesTheM4TuningDecision() throws {
+    /// Differs from anything these tests' fixture executables scan to, so
+    /// seeing it back means the previous result was carried forward.
+    private let staleTarget = DS4LaunchTarget(
+        gpuIsM4: true,
+        serverHasM4QwenDefaults: false,
+        serverHasLegacyM4QwenKernels: true,
+        serverStreamsQwenExperts: true
+    )
+
+    func testUnchangedExecutableReusesItsLaunchTarget() throws {
         let model = try writeModel(named: "model.gguf", architecture: "qwen4exp")
         let config = config(modelPath: model.path)
         try Data("stock".utf8).write(to: URL(fileURLWithPath: config.serverPath))
 
-        // The opposite of what a scan would return, on any GPU.
-        let sentinel = !DS4M4QwenTuning.applies(toServerAt: config.serverPath)
         let result = SettingsDerivedRefresh.compute(
             config: config,
             inputs: SettingsDerivedInputs(config),
-            previous: previous(for: config, model: .unknown, m4QwenTuning: sentinel),
+            previous: previous(for: config, model: .unknown, launchTarget: staleTarget),
             forceRefresh: false
         )
 
-        XCTAssertEqual(result.m4QwenTuning, sentinel, "an unchanged executable must not be rescanned")
+        XCTAssertEqual(result.launchTarget, staleTarget, "an unchanged executable must not be rescanned")
     }
 
     func testExecutableReplacedInPlaceIsRescannedForItsM4Defaults() throws {
@@ -146,14 +153,10 @@ final class SettingsDerivedStateTests: XCTestCase {
         let config = config(modelPath: model.path)
         let server = URL(fileURLWithPath: config.serverPath)
         try Data("stock".utf8).write(to: server)
-        let stale = previous(
-            for: config,
-            model: .unknown,
-            m4QwenTuning: !DS4M4QwenTuning.applies(toServerAt: config.serverPath)
-        )
+        let stale = previous(for: config, model: .unknown, launchTarget: staleTarget)
 
         // A rebuild that gained the M4 gates, at a different length.
-        try (Data("rebuilt with ".utf8) + DS4M4QwenTuning.serverM4Marker).write(to: server)
+        try (Data("rebuilt with ".utf8) + DS4LaunchTarget.m4QwenDefaultsMarker).write(to: server)
 
         let result = SettingsDerivedRefresh.compute(
             config: config,
@@ -162,8 +165,11 @@ final class SettingsDerivedStateTests: XCTestCase {
             forceRefresh: false
         )
 
-        XCTAssertEqual(result.m4QwenTuning, DS4M4QwenTuning.applies(toServerAt: config.serverPath))
-        XCTAssertFalse(result.m4QwenTuning, "an executable with its own M4 defaults takes no overrides")
+        XCTAssertTrue(result.launchTarget.serverHasM4QwenDefaults)
+        XCTAssertEqual(
+            DS4M4QwenTuning.selection(for: result.launchTarget), .none,
+            "an executable with its own M4 defaults takes no overrides"
+        )
     }
 
     func testExecutableRebuiltBehindASymlinkIsRescannedForItsM4Defaults() throws {
@@ -179,12 +185,10 @@ final class SettingsDerivedStateTests: XCTestCase {
             atPath: config.serverPath,
             withDestinationPath: target.path
         )
-        // `true` is the one value a rescan of the rebuilt target can never
-        // return, on any GPU, so seeing it back means the link hid the rebuild.
-        let stale = previous(for: config, model: .unknown, m4QwenTuning: true)
+        let stale = previous(for: config, model: .unknown, launchTarget: staleTarget)
 
         // The link is untouched; only its target is rebuilt, at a new length.
-        try (Data("rebuilt with ".utf8) + DS4M4QwenTuning.serverM4Marker).write(to: target)
+        try (Data("rebuilt with ".utf8) + DS4LaunchTarget.m4QwenDefaultsMarker).write(to: target)
 
         let result = SettingsDerivedRefresh.compute(
             config: config,
@@ -193,8 +197,8 @@ final class SettingsDerivedStateTests: XCTestCase {
             forceRefresh: false
         )
 
-        XCTAssertFalse(
-            result.m4QwenTuning,
+        XCTAssertTrue(
+            result.launchTarget.serverHasM4QwenDefaults,
             "a target rebuilt behind a symlinked server path must be rescanned"
         )
     }

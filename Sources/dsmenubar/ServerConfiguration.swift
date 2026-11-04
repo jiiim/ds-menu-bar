@@ -737,11 +737,14 @@ extension ServerConfiguration.Config {
 
     /// Validate the constraints enforced by ds4-server's option parser plus
     /// cross-option constraints that would otherwise produce a misleading run.
+    /// `launchTarget` describes the selected ds4-server; it decides whether
+    /// Qwen can stream from SSD.
     func validationErrors(
         modelProfile: DS4ModelProfile = .unknown,
         supportProfile: DS4SupportProfile = .unavailable,
         visionPathIsValid: Bool? = nil,
-        visionProfile: DS4VisionProfile? = nil
+        visionProfile: DS4VisionProfile? = nil,
+        launchTarget: DS4LaunchTarget = .unknown
     ) -> [Field: String] {
         var errors: [Field: String] = [:]
         func nonEmpty(_ value: String, field: Field, message: String) {
@@ -969,13 +972,15 @@ extension ServerConfiguration.Config {
         modelProfile: DS4ModelProfile = .unknown,
         supportProfile: DS4SupportProfile = .unavailable,
         visionPathIsValid: Bool? = nil,
-        visionProfile: DS4VisionProfile? = nil
+        visionProfile: DS4VisionProfile? = nil,
+        launchTarget: DS4LaunchTarget = .unknown
     ) -> String? {
         let errors = validationErrors(
             modelProfile: modelProfile,
             supportProfile: supportProfile,
             visionPathIsValid: visionPathIsValid,
-            visionProfile: visionProfile
+            visionProfile: visionProfile,
+            launchTarget: launchTarget
         )
         guard !errors.isEmpty else { return nil }
         return Field.allCases.lazy.compactMap { errors[$0] }.first

@@ -347,6 +347,13 @@ final class ServerCommandTests: XCTestCase {
         }
     }
 
+    private let stockM4Target = DS4LaunchTarget(
+        gpuIsM4: true,
+        serverHasM4QwenDefaults: false,
+        serverHasLegacyM4QwenKernels: false,
+        serverStreamsQwenExperts: false
+    )
+
     func testM4QwenTuningJoinsConfiguredQwenVariables() {
         let model = DS4ModelProfile(
             family: .qwen38,
@@ -361,11 +368,11 @@ final class ServerCommandTests: XCTestCase {
         let tuned = DS4ServerCommand.environmentOverrides(
             configuration: config,
             modelProfile: model,
-            m4QwenTuning: true
+            target: stockM4Target
         )
         XCTAssertEqual(
             tuned,
-            DS4M4QwenTuning.environment(routedExpertTypes: [12, 39])
+            DS4M4QwenTuning.environment(routedExpertTypes: [12, 39], target: stockM4Target)
                 .merging(["DS4_QWEN4_MTP_DEPTH": "3"]) { current, _ in current }
         )
         XCTAssertEqual(
@@ -376,7 +383,7 @@ final class ServerCommandTests: XCTestCase {
         let preview = DS4ServerCommand.preview(
             configuration: config,
             modelProfile: model,
-            m4QwenTuning: true
+            target: stockM4Target
         )
         for (key, value) in tuned {
             XCTAssertTrue(preview.contains("\(key)=\(value)"), key)
@@ -392,13 +399,13 @@ final class ServerCommandTests: XCTestCase {
             XCTAssertTrue(DS4ServerCommand.environmentOverrides(
                 configuration: config,
                 modelProfile: model,
-                m4QwenTuning: true
+                target: stockM4Target
             ).isEmpty, architecture)
         }
         XCTAssertTrue(DS4ServerCommand.environmentOverrides(
             configuration: config,
             modelProfile: .unknown,
-            m4QwenTuning: true
+            target: stockM4Target
         ).isEmpty)
     }
 
@@ -414,7 +421,7 @@ final class ServerCommandTests: XCTestCase {
         let tuned = DS4ServerCommand.launchEnvironment(
             configuration: config,
             modelProfile: model,
-            m4QwenTuning: true,
+            target: stockM4Target,
             inheriting: inherited
         )
         XCTAssertEqual(tuned["DS4_QWEN4_MOE_TAILS"], "1")

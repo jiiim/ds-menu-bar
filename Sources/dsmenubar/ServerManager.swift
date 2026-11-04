@@ -701,6 +701,7 @@ final class ServerManager: ObservableObject {
         let model: DS4ModelProfile
         let support: DS4SupportProfile
         let vision: DS4VisionProfile
+        var launchTarget: DS4LaunchTarget? = nil
     }
 
     /// The outgoing configuration and its model family, used to remember
@@ -760,10 +761,14 @@ final class ServerManager: ObservableObject {
             for: newConfig.visionPath,
             relativeTo: serverDirectory
         )
+        let launchTarget = inspected?.launchTarget ?? DS4LaunchTarget.inspecting(
+            serverPath: DS4ServerCommand.expandingTilde(newConfig.serverPath)
+        )
         guard newConfig.validationErrors(
             modelProfile: modelProfile,
             supportProfile: supportProfile,
-            visionProfile: visionProfile
+            visionProfile: visionProfile,
+            launchTarget: launchTarget
         ).isEmpty else { return .invalid }
         // Only a process that is actually alive needs restarting; .starting with
         // a dead process (a launch that never got off the ground) does not.

@@ -40,17 +40,18 @@ enum DS4ServerCommand {
         }
     }
 
-    /// `m4QwenTuning` is `DS4M4QwenTuning.applies(toServerAt:)` for the
+    /// `target` is `DS4LaunchTarget.inspecting(serverPath:)` for the
     /// executable being launched.
     static func environmentOverrides(
         configuration: ServerConfiguration.Config,
         modelProfile: DS4ModelProfile = .unknown,
-        m4QwenTuning: Bool = false
+        target: DS4LaunchTarget = .unknown
     ) -> [String: String] {
         guard modelProfile.family == .qwen38 else { return [:] }
-        var environment: [String: String] = m4QwenTuning
-            ? DS4M4QwenTuning.environment(routedExpertTypes: modelProfile.routedExpertTypes)
-            : [:]
+        var environment = DS4M4QwenTuning.environment(
+            routedExpertTypes: modelProfile.routedExpertTypes,
+            target: target
+        )
         if configuration.mtpMode == .embedded && modelProfile.supportsEmbeddedMTP {
             environment["DS4_QWEN4_MTP_DEPTH"] = configuration.qwenMTPDepth.environmentValue
         }
@@ -66,7 +67,7 @@ enum DS4ServerCommand {
     static func launchEnvironment(
         configuration: ServerConfiguration.Config,
         modelProfile: DS4ModelProfile = .unknown,
-        m4QwenTuning: Bool = false,
+        target: DS4LaunchTarget = .unknown,
         inheriting base: [String: String] = ProcessInfo.processInfo.environment
     ) -> [String: String] {
         var environment = base
@@ -76,7 +77,7 @@ enum DS4ServerCommand {
         environment.merge(environmentOverrides(
             configuration: configuration,
             modelProfile: modelProfile,
-            m4QwenTuning: m4QwenTuning
+            target: target
         )) { _, configured in configured }
         return environment
     }
@@ -88,7 +89,8 @@ enum DS4ServerCommand {
         resolvedVisionPath: String = "",
         modelProfile: DS4ModelProfile = .unknown,
         supportProfile: DS4SupportProfile = .unavailable,
-        visionProfile: DS4VisionProfile? = nil
+        visionProfile: DS4VisionProfile? = nil,
+        target: DS4LaunchTarget = .unknown
     ) -> [String] {
         var args: [String] = [
             "--metal",
@@ -216,7 +218,7 @@ enum DS4ServerCommand {
         modelProfile: DS4ModelProfile = .unknown,
         supportProfile: DS4SupportProfile = .unavailable,
         visionProfile: DS4VisionProfile? = nil,
-        m4QwenTuning: Bool = false
+        target: DS4LaunchTarget = .unknown
     ) -> String {
         let serverPath = expandingTilde(configuration.serverPath)
         let directory = serverDirectory(for: configuration.serverPath)
@@ -227,12 +229,13 @@ enum DS4ServerCommand {
             resolvedVisionPath: resolving(configuration.visionPath, relativeTo: directory),
             modelProfile: modelProfile,
             supportProfile: supportProfile,
-            visionProfile: visionProfile
+            visionProfile: visionProfile,
+            target: target
         )
         let environment = environmentOverrides(
             configuration: configuration,
             modelProfile: modelProfile,
-            m4QwenTuning: m4QwenTuning
+            target: target
         )
         let managedKeys = managedEnvironmentKeys(for: modelProfile)
         let assignments = environmentKeys.compactMap { key -> String? in

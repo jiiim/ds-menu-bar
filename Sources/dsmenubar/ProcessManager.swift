@@ -165,10 +165,14 @@ final class ProcessManager {
             for: configuration.visionPath,
             relativeTo: serverDir
         )
+        // Read here rather than remembered: the executable at this path can
+        // be rebuilt between launches.
+        let launchTarget = DS4LaunchTarget.inspecting(serverPath: resolvedServerPath)
         if let firstError = configuration.firstValidationError(
             modelProfile: modelProfile,
             supportProfile: supportProfile,
-            visionProfile: visionProfile
+            visionProfile: visionProfile,
+            launchTarget: launchTarget
         ) {
             return failLaunch("Invalid server configuration: \(firstError)")
         }
@@ -231,22 +235,19 @@ final class ProcessManager {
             resolvedVisionPath: resolvedVisionPath,
             modelProfile: modelProfile,
             supportProfile: supportProfile,
-            visionProfile: visionProfile
+            visionProfile: visionProfile,
+            target: launchTarget
         )
         proc.arguments = args
-        // Scanned here rather than remembered: the executable at this path can
-        // be rebuilt between launches.
-        let m4QwenTuning = modelProfile.family == .qwen38 &&
-            DS4M4QwenTuning.applies(toServerAt: resolvedServerPath)
         let environmentOverrides = DS4ServerCommand.environmentOverrides(
             configuration: configuration,
             modelProfile: modelProfile,
-            m4QwenTuning: m4QwenTuning
+            target: launchTarget
         )
         proc.environment = DS4ServerCommand.launchEnvironment(
             configuration: configuration,
             modelProfile: modelProfile,
-            m4QwenTuning: m4QwenTuning
+            target: launchTarget
         )
 
         // Working directory: the server binary's directory.
@@ -317,16 +318,19 @@ final class ProcessManager {
             }.joined(separator: " ")
             writeLog("env:  \(renderedEnvironment)\n")
         }
-        if modelProfile.family == .qwen38 && DS4M4QwenTuning.gpuIsM4 {
+        if modelProfile.family == .qwen38 && launchTarget.gpuIsM4 {
             let reason: String
-            if !m4QwenTuning {
-                reason = "none (ds4-server has its own M4 defaults)"
-            } else if DS4M4QwenTuning.environment(
-                routedExpertTypes: modelProfile.routedExpertTypes
+            if DS4M4QwenTuning.environment(
+                routedExpertTypes: modelProfile.routedExpertTypes,
+                target: launchTarget
             ).isEmpty {
-                reason = "none (expert types outside the measured Q4 and Q2 packs)"
+                reason = launchTarget.serverHasM4QwenDefaults
+                    ? "none (ds4-server has its own M4 Qwen defaults)"
+                    : "none (expert types outside the measured Q4 and Q2 packs)"
+            } else if DS4M4QwenTuning.selection(for: launchTarget) == .compatible {
+                reason = "M4 Qwen overrides that keep ds4-server's own M2-M4 kernels"
             } else {
-                reason = "M4 Qwen overrides (ds4-server lacks its own M4 defaults)"
+                reason = "M4 Qwen overrides (ds4-server has no M4 Qwen tuning)"
             }
             writeLog("tune: \(reason)\n")
         }
