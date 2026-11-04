@@ -159,12 +159,13 @@ struct DS4ModelProfile: Equatable {
         target: DS4LaunchTarget,
         physicalMemoryBytes: UInt64 = ProcessInfo.processInfo.physicalMemory
     ) -> String? {
-        guard family == .qwen38, !ssdStreamingEnabled,
+        guard family == .qwen38,
+              !(ssdStreamingEnabled && supportsSSDStreaming(on: target)),
               physicalMemoryBytes / (1_024 * 1_024 * 1_024) < 96,
               let types = routedExpertTypes, !types.isEmpty,
               types.isDisjoint(with: DS4M4QwenTuning.ExpertType.lowBit)
         else { return nil }
-        let summary = "\(displayName) Q4 needs about 70 GiB for its weights alone, more than this Mac can hold."
+        let summary = "\(displayName) Q4 needs about 70 GiB for its weights alone, too much for this Mac's memory once context is added."
         return target.serverStreamsQwenExperts
             ? "\(summary) Turn on SSD streaming on the Performance pane, or choose the Q2 model."
             : "\(summary) Choose the Q2 model, or update ds4-server to stream Q4 from SSD."

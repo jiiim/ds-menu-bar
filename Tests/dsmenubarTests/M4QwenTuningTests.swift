@@ -102,6 +102,8 @@ final class M4QwenTuningTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(warning(q4, 64, on: streaming)).contains("Turn on SSD streaming"))
         XCTAssertTrue(try XCTUnwrap(warning(q4, 64, on: target())).contains("update ds4-server"))
         XCTAssertNil(warning(q4, 64, on: streaming, streamingOn: true))
+        // The toggle alone streams nothing on a build that cannot.
+        XCTAssertNotNil(warning(q4, 64, on: target(), streamingOn: true))
         XCTAssertNil(warning(q4, 96, on: streaming))
         XCTAssertNil(warning(q2, 64, on: streaming))
         XCTAssertNil(warning(.from(architecture: "glm5-next"), 64, on: streaming))
