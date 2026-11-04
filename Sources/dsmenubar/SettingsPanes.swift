@@ -344,7 +344,7 @@ extension SettingsView {
                     if !modelProfile.fillsSSDExpertCacheOnDemand {
                         Toggle("Skip the default expert-cache preload", isOn: $draft.ssdStreamingCold)
                     }
-                    textRow(
+                    numericTextRow(
                         "Expert cache override",
                         text: $draft.ssdStreamingCacheExperts,
                         errorKey: .ssdStreamingCacheExperts,
@@ -647,7 +647,7 @@ extension SettingsView {
             }
 
             Section("Server diagnostics") {
-                textRow(
+                numericTextRow(
                     "Simulate used memory",
                     text: simulateUsedMemoryTextBinding,
                     errorKey: .simulateUsedMemory,
@@ -701,6 +701,32 @@ extension SettingsView {
         }
     }
 
+
+    /// A number with an optional `GB` suffix, shown grouped like an integer
+    /// row and committed the same way.
+    func numericTextRow(
+        _ title: String,
+        text: Binding<String>,
+        errorKey: ServerConfiguration.Config.Field? = nil,
+        note: String? = nil
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            LabeledContent(title) {
+                TextField("", value: text, format: DS4GroupedNumericTextStyle())
+                    .textFieldStyle(.roundedBorder)
+                    .multilineTextAlignment(.trailing)
+                    .frame(minWidth: 180, maxWidth: 260)
+                    .accessibilityLabel(title)
+            }
+            if let note {
+                Text(note).font(.footnote).foregroundStyle(.secondary)
+            }
+            if let errorKey, let error = validationErrors[errorKey] {
+                validationLabel(error, for: errorKey)
+            }
+        }
+    }
+
     @ViewBuilder
     func integerRow(
         _ title: String,
@@ -712,23 +738,29 @@ extension SettingsView {
         grouped: Bool = true
     ) -> some View {
         let constraint = draft.integerConstraint(for: errorKey, modelProfile: modelProfile)
+        let text = { (number: Int) in grouped ? number.formatted() : String(number) }
         VStack(alignment: .leading, spacing: 4) {
             LabeledContent(title) {
-                TextField("", value: value,
-                          format: .number.grouping(grouped ? .automatic : .never))
-                    .textFieldStyle(.roundedBorder)
-                    .multilineTextAlignment(.trailing)
-                    .frame(width: 150)
-                    .accessibilityLabel(title)
+                Group {
+                    if grouped {
+                        TextField("", value: value, format: .number)
+                    } else {
+                        TextField("", value: value, format: DS4UngroupedIntegerStyle())
+                    }
+                }
+                .textFieldStyle(.roundedBorder)
+                .multilineTextAlignment(.trailing)
+                .frame(width: 150)
+                .accessibilityLabel(title)
             }
             if let note {
                 Text(note).font(.footnote).foregroundStyle(.secondary)
             }
             if let constraint {
                 let range = constraint.minimum == constraint.maximum
-                    ? "Required value: \(constraint.minimum.formatted())"
-                    : "Valid range: \(constraint.minimum.formatted())–\(constraint.maximum.formatted())"
-                let recommended = constraint.recommendedValue.map { "New-profile value: \($0.formatted())" }
+                    ? "Required value: \(text(constraint.minimum))"
+                    : "Valid range: \(text(constraint.minimum))–\(text(constraint.maximum))"
+                let recommended = constraint.recommendedValue.map { "New-profile value: \(text($0))" }
                 Text([range, constraint.sentinelDescription, recommended].compactMap { $0 }.joined(separator: ". "))
                     .font(.footnote)
                     .foregroundStyle(.secondary)

@@ -475,6 +475,85 @@ final class ServerCommandTests: XCTestCase {
         XCTAssertNotNil(config.validationErrors(modelProfile: model, launchTarget: stockM4Target)[.ssdStreamingEnabled])
     }
 
+    func testGroupedNumericTextIsAcceptedAndReachesDS4AsDigits() {
+        var config = ServerConfiguration.Config()
+        config.ssdStreamingEnabled = true
+        config.ssdStreamingCacheExperts = " 1,111gb "
+        config.simulateUsedMemory = "1,024GB"
+        let model = DS4ModelProfile.from(architecture: "glm5-next")
+
+        let errors = config.validationErrors(modelProfile: model)
+        XCTAssertNil(errors[.ssdStreamingCacheExperts])
+        XCTAssertNil(errors[.simulateUsedMemory])
+
+        let args = DS4ServerCommand.arguments(
+            configuration: config,
+            resolvedModelPath: "/tmp/glm.gguf",
+            resolvedMTPPath: "",
+            modelProfile: model
+        )
+        XCTAssertEqual(args[args.firstIndex(of: "--ssd-streaming-cache-experts")! + 1], "1111GB")
+        XCTAssertEqual(args[args.firstIndex(of: "--simulate-used-memory")! + 1], "1024GB")
+
+        let saved = config.normalized()
+        XCTAssertEqual(saved.ssdStreamingCacheExperts, "1111GB")
+        XCTAssertEqual(saved.simulateUsedMemory, "1024GB")
+
+        config.ssdStreamingCacheExperts = "12,000"
+        XCTAssertNil(config.validationErrors(modelProfile: model)[.ssdStreamingCacheExperts])
+        config.ssdStreamingCacheExperts = "1x5GB"
+        XCTAssertNotNil(config.validationErrors(modelProfile: model)[.ssdStreamingCacheExperts])
+        config.ssdStreamingCacheExperts = ","
+        XCTAssertNotNil(config.validationErrors(modelProfile: model)[.ssdStreamingCacheExperts])
+    }
+
+    func testNumericTextIsShownGroupedAndStoredForDS4() {
+        let style = DS4GroupedNumericTextStyle()
+        let thousand = 1_111.formatted()
+        XCTAssertEqual(style.format("111,1gb"), "\(thousand)GB")
+        XCTAssertEqual(style.format("1111gB"), "\(thousand)GB")
+        XCTAssertEqual(style.format("1111"), thousand)
+        XCTAssertEqual(style.format("40GB"), "40GB")
+        XCTAssertEqual(style.format(""), "")
+        XCTAssertEqual(style.format("lots"), "lots")
+        XCTAssertEqual(style.parseStrategy.parse(" 111,1gB "), "1111GB")
+        XCTAssertEqual(style.parseStrategy.parse(style.format("24576")), "24576")
+    }
+
+    func testPortIsShownWithoutCommasAndAcceptsThem() throws {
+        let style = DS4UngroupedIntegerStyle()
+        XCTAssertEqual(style.format(8_000), "8000")
+        XCTAssertEqual(try style.parseStrategy.parse("8,000"), 8_000)
+        XCTAssertEqual(try style.parseStrategy.parse(" 65,535 "), 65_535)
+        XCTAssertEqual(try style.parseStrategy.parse("8000"), 8_000)
+        XCTAssertThrowsError(try style.parseStrategy.parse("eight"))
+    }
+
+    func testRangeErrorsGroupEveryNumberButAPort() throws {
+        var config = ServerConfiguration.Config()
+        config.port = 0
+        config.ctxSize = -1
+        let errors = config.validationErrors()
+        let port = try XCTUnwrap(errors[.port])
+        XCTAssertTrue(port.hasSuffix("65535"), port)
+        let context = try XCTUnwrap(errors[.ctxSize])
+        let maximum = try XCTUnwrap(config.integerConstraint(for: .ctxSize)?.maximum)
+        XCTAssertTrue(context.hasSuffix(maximum.formatted()), context)
+    }
+
+    func testRangeErrorsKeepTheCaseOfTheirUnits() throws {
+        var config = ServerConfiguration.Config()
+        config.ssdStreamingEnabled = true
+        config.ssdStreamingCacheExperts = "1x5GB"
+        config.simulateUsedMemory = "1x5GB"
+        let errors = config.validationErrors(modelProfile: .from(architecture: "glm5-next"))
+
+        let cache = try XCTUnwrap(errors[.ssdStreamingCacheExperts])
+        XCTAssertTrue(cache.hasPrefix("Use valid range: 1–"), cache)
+        XCTAssertTrue(cache.contains("GB, or leave blank"), cache)
+        XCTAssertTrue(try XCTUnwrap(errors[.simulateUsedMemory]).contains(" GiB"))
+    }
+
     func testQwenValidationSkipsTheHiddenPreloadField() {
         let model = DS4ModelProfile(family: .qwen38, architecture: "qwen4exp")
         var streaming = stockM4Target

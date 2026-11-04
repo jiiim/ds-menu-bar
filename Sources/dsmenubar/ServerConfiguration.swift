@@ -487,7 +487,58 @@ struct DS4DecimalConstraint: Equatable {
     }
 }
 
+/// Shows a numeric text setting with digit grouping while the configuration
+/// keeps what ds4 receives, as `.number` does for the integer settings. Text
+/// that does not begin with a number is left for validation to report.
+struct DS4GroupedNumericTextStyle: ParseableFormatStyle {
+    struct Strategy: ParseStrategy {
+        func parse(_ value: String) -> String {
+            DS4NumericTextConstraint.commandLineText(value)
+        }
+    }
+
+    var parseStrategy: Strategy { Strategy() }
+
+    func format(_ value: String) -> String {
+        let text = DS4NumericTextConstraint.commandLineText(value)
+        let digits = text.prefix { $0.isASCII && $0.isNumber }
+        guard let number = UInt64(digits) else { return value }
+        return number.formatted() + text.dropFirst(digits.count)
+    }
+}
+
+/// Shows an identifier such as a port without grouping, and reads one typed
+/// with it: `.number` stops at the first separator, turning 8,000 into 8.
+struct DS4UngroupedIntegerStyle: ParseableFormatStyle {
+    struct Strategy: ParseStrategy {
+        func parse(_ value: String) throws -> Int {
+            guard let number = Int(DS4NumericTextConstraint.commandLineText(value)) else {
+                throw CocoaError(.formatting)
+            }
+            return number
+        }
+    }
+
+    var parseStrategy: Strategy { Strategy() }
+
+    func format(_ value: Int) -> String { String(value) }
+}
+
 struct DS4NumericTextConstraint: Equatable {
+    /// The text ds4 receives. Limits are shown with digit grouping, so a value
+    /// typed the same way is accepted; ds4's parsers take digits only. A
+    /// budget's suffix is always spelled `GB`.
+    static func commandLineText(_ value: String) -> String {
+        var text = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        for separator in [",", Locale.current.groupingSeparator ?? ","] {
+            text = text.replacingOccurrences(of: separator, with: "")
+        }
+        if text.lowercased().hasSuffix("gb") {
+            text = text.dropLast(2) + "GB"
+        }
+        return text
+    }
+
     enum Syntax: Equatable {
         case gib
         case expertCountOrGiB
@@ -501,7 +552,7 @@ struct DS4NumericTextConstraint: Equatable {
     let source: String
 
     func contains(_ value: String) -> Bool {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = Self.commandLineText(value)
         guard !trimmed.isEmpty else { return false }
         let lower = trimmed.lowercased()
         let hasGiBSuffix = lower.hasSuffix("gb")
@@ -531,6 +582,11 @@ struct DS4NumericTextConstraint: Equatable {
         case .unsignedInteger:
             return "Valid range: 0–\((countMaximum ?? UInt64.max).formatted())"
         }
+    }
+
+    /// `rangeDescription` for the middle of a sentence; units keep their case.
+    var rangeDescriptionInSentence: String {
+        rangeDescription.prefix(1).lowercased() + rangeDescription.dropFirst()
     }
 }
 
@@ -755,10 +811,12 @@ extension ServerConfiguration.Config {
         func bounded(_ value: Int, field: Field, label: String) {
             guard let constraint = integerConstraint(for: field, modelProfile: modelProfile),
                   !constraint.contains(value) else { return }
+            // Numbers are grouped everywhere but a port, which is an identifier.
+            let text = { (number: Int) in field == .port ? String(number) : number.formatted() }
             if constraint.minimum == constraint.maximum {
-                errors[field] = "\(label) must be \(constraint.minimum)"
+                errors[field] = "\(label) must be \(text(constraint.minimum))"
             } else {
-                errors[field] = "\(label) must be between \(constraint.minimum) and \(constraint.maximum)"
+                errors[field] = "\(label) must be between \(text(constraint.minimum)) and \(text(constraint.maximum))"
             }
         }
 
@@ -805,7 +863,7 @@ extension ServerConfiguration.Config {
             if !ssdStreamingCacheExperts.isEmpty,
                let constraint = numericTextConstraint(for: .ssdStreamingCacheExperts, modelProfile: modelProfile),
                !constraint.contains(ssdStreamingCacheExperts) {
-                errors[.ssdStreamingCacheExperts] = "Use \(constraint.rangeDescription.lowercased()), or leave blank for Automatic"
+                errors[.ssdStreamingCacheExperts] = "Use \(constraint.rangeDescriptionInSentence), or leave blank for Automatic"
             }
             if modelProfile.isFullGLM {
                 bounded(ssdStreamingFullLayers, field: .ssdStreamingFullLayers, label: "Full resident layers")
@@ -948,7 +1006,7 @@ extension ServerConfiguration.Config {
         if !simulateUsedMemory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
            let constraint = numericTextConstraint(for: .simulateUsedMemory, modelProfile: modelProfile),
            !constraint.contains(simulateUsedMemory) {
-            errors[.simulateUsedMemory] = "Use \(constraint.rangeDescription.lowercased()), such as 8 or 40GB"
+            errors[.simulateUsedMemory] = "Use \(constraint.rangeDescriptionInSentence), such as 8 or 40GB"
         }
 
         if traceEnabled {
@@ -1018,6 +1076,8 @@ extension ServerConfiguration.Config {
         var config = self
         config.mtpDraft = min(DS4ConfigurationLimits.maxMTPDraft,
                               max(DS4ConfigurationLimits.minMTPDraft, config.mtpDraft))
+        config.ssdStreamingCacheExperts = DS4NumericTextConstraint.commandLineText(config.ssdStreamingCacheExperts)
+        config.simulateUsedMemory = DS4NumericTextConstraint.commandLineText(config.simulateUsedMemory)
         if !config.serverPath.isEmpty {
             config.serverPath = DS4ServerCommand.storingAbsolutePath(config.serverPath)
             let directory = DS4ServerCommand.serverDirectory(for: config.serverPath)

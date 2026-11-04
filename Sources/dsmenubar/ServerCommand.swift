@@ -138,8 +138,7 @@ enum DS4ServerCommand {
             if configuration.ssdStreamingCold && !modelProfile.fillsSSDExpertCacheOnDemand {
                 args.append("--ssd-streaming-cold")
             }
-            let cacheExperts = configuration.ssdStreamingCacheExperts
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let cacheExperts = DS4NumericTextConstraint.commandLineText(configuration.ssdStreamingCacheExperts)
             if !cacheExperts.isEmpty {
                 args += ["--ssd-streaming-cache-experts", cacheExperts]
             }
@@ -170,8 +169,9 @@ enum DS4ServerCommand {
             }
         }
 
-        if configuration.simulateUsedMemory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
-            args += ["--simulate-used-memory", configuration.simulateUsedMemory.trimmingCharacters(in: .whitespacesAndNewlines)]
+        let simulatedMemory = DS4NumericTextConstraint.commandLineText(configuration.simulateUsedMemory)
+        if !simulatedMemory.isEmpty {
+            args += ["--simulate-used-memory", simulatedMemory]
         }
 
         if modelProfile.supportsVision && configuration.visionEnabled && !resolvedVisionPath.isEmpty &&
