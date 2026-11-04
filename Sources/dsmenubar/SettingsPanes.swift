@@ -789,9 +789,7 @@ extension SettingsView {
         let constraint = draft.decimalConstraint(for: errorKey)
         VStack(alignment: .leading, spacing: 4) {
             LabeledContent(title) {
-                TextField("", value: value, format: FloatingPointFormatStyle<Double>.number
-                    .precision(.fractionLength(0...3))
-                    .locale(.settingsNumbers))
+                TextField("", value: value, format: DS4DecimalTextStyle())
                     .textFieldStyle(.roundedBorder)
                     .multilineTextAlignment(.trailing)
                     .frame(width: 150)

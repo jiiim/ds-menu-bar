@@ -540,6 +540,19 @@ final class ServerCommandTests: XCTestCase {
         XCTAssertThrowsError(try grouped.parseStrategy.parse("8.192"))
     }
 
+    func testDecimalFieldsRefuseACommaThatDoesNotGroupThousands() throws {
+        let style = DS4DecimalTextStyle()
+        for (text, value) in [("0.5", 0.5), ("3.25", 3.25), ("1,000", 1_000), ("1,000.5", 1_000.5),
+                              ("12", 12), (" .5 ", 0.5), ("٣.٢٥", 3.25), ("-1.5", -1.5)] {
+            XCTAssertEqual(try style.parseStrategy.parse(text), value, text)
+        }
+        for text in ["0,5", "3,25", "1,00", "1,0000", "1.5,000", "", ",", "abc"] {
+            XCTAssertThrowsError(try style.parseStrategy.parse(text), text)
+        }
+        XCTAssertEqual(style.format(1_000.5), "1,000.5")
+        XCTAssertEqual(style.format(0.125), "0.125")
+    }
+
     func testNumbersUseOneFormatInEveryRegion() {
         XCTAssertEqual(1_234_567.groupedText, "1,234,567")
         XCTAssertEqual(UInt64(24_576).groupedText, "24,576")

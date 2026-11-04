@@ -548,13 +548,39 @@ struct DS4IntegerTextStyle: ParseableFormatStyle {
     }
 }
 
+/// A decimal setting. A comma counts only where it groups thousands: the
+/// standard parser reads 0,5 as 0 and 3,25 as 325, and in a decimal a comma
+/// may well be meant as the point, so anything else is refused.
+struct DS4DecimalTextStyle: ParseableFormatStyle {
+    struct Strategy: ParseStrategy {
+        private static let number = #"^-?([0-9]{1,3}(,[0-9]{3})+|[0-9]*)(\.[0-9]*)?$"#
+
+        func parse(_ value: String) throws -> Double {
+            let text = DS4NumericTextConstraint.asciiDigits(value)
+            guard text.range(of: Self.number, options: .regularExpression) != nil,
+                  let number = Double(text.replacingOccurrences(of: ",", with: "")) else {
+                throw CocoaError(.formatting)
+            }
+            return number
+        }
+    }
+
+    var parseStrategy: Strategy { Strategy() }
+
+    func format(_ value: Double) -> String {
+        value.formatted(
+            FloatingPointFormatStyle<Double>.number
+                .precision(.fractionLength(0...3))
+                .locale(.settingsNumbers)
+        )
+    }
+}
+
 struct DS4NumericTextConstraint: Equatable {
-    /// The text ds4 receives, whose parsers take ASCII digits only. Limits
-    /// are shown with commas, so a value typed the same way is accepted, as
-    /// are digits from another script. A budget's suffix is always `GB`.
-    static func commandLineText(_ value: String) -> String {
+    /// `value` trimmed, with digits from any script as ASCII.
+    static func asciiDigits(_ value: String) -> String {
         var scalars = String.UnicodeScalarView()
-        for scalar in value.trimmingCharacters(in: .whitespacesAndNewlines).unicodeScalars where scalar != "," {
+        for scalar in value.trimmingCharacters(in: .whitespacesAndNewlines).unicodeScalars {
             if scalar.properties.generalCategory == .decimalNumber,
                let digit = scalar.properties.numericValue {
                 scalars.append(Unicode.Scalar(UInt8(48 + Int(digit))))
@@ -562,7 +588,14 @@ struct DS4NumericTextConstraint: Equatable {
                 scalars.append(scalar)
             }
         }
-        var text = String(scalars)
+        return String(scalars)
+    }
+
+    /// The text ds4 receives, whose parsers take ASCII digits only. Limits
+    /// are shown with commas, so a value typed the same way is accepted, as
+    /// are digits from another script. A budget's suffix is always `GB`.
+    static func commandLineText(_ value: String) -> String {
+        var text = asciiDigits(value).replacingOccurrences(of: ",", with: "")
         if text.lowercased().hasSuffix("gb") {
             text = text.dropLast(2) + "GB"
         }
