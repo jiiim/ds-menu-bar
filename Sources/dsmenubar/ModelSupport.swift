@@ -152,6 +152,23 @@ struct DS4ModelProfile: Equatable {
     func supportsSSDStreaming(on target: DS4LaunchTarget) -> Bool {
         family != .qwen38 || target.serverStreamsQwenExperts
     }
+    /// A warning when the Qwen Q4 pack cannot load resident on this Mac: its
+    /// weights alone take 69.73 GiB, before context and runtime buffers.
+    func residentMemoryWarning(
+        ssdStreamingEnabled: Bool,
+        target: DS4LaunchTarget,
+        physicalMemoryBytes: UInt64 = ProcessInfo.processInfo.physicalMemory
+    ) -> String? {
+        guard family == .qwen38, !ssdStreamingEnabled,
+              physicalMemoryBytes / (1_024 * 1_024 * 1_024) < 96,
+              let types = routedExpertTypes, !types.isEmpty,
+              types.isDisjoint(with: DS4M4QwenTuning.ExpertType.lowBit)
+        else { return nil }
+        let summary = "\(displayName) Q4 needs about 70 GiB for its weights alone, more than this Mac can hold."
+        return target.serverStreamsQwenExperts
+            ? "\(summary) Turn on SSD streaming on the Performance pane, or choose the Q2 model."
+            : "\(summary) Choose the Q2 model, or update ds4-server to stream Q4 from SSD."
+    }
     /// Qwen fills its expert cache on demand: ds4 refuses full resident
     /// layers and preloaded experts for it and reads the cold option only on
     /// the DeepSeek and GLM paths.

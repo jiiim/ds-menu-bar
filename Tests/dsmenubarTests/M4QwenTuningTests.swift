@@ -86,6 +86,27 @@ final class M4QwenTuningTests: XCTestCase {
         XCTAssertEqual(DS4M4QwenTuning.environment(routedExpertTypes: [8, 12, 39], target: target()), [:])
     }
 
+    func testQ4WarnsWhereItCannotLoadResident() throws {
+        let gibibyte = UInt64(1_024 * 1_024 * 1_024)
+        let q4 = DS4ModelProfile(family: .qwen38, architecture: "qwen4exp", routedExpertTypes: q4Types)
+        let q2 = DS4ModelProfile(family: .qwen38, architecture: "qwen4exp", routedExpertTypes: q2Types)
+        let streaming = target(streamsQwen: true)
+        func warning(_ model: DS4ModelProfile, _ gib: UInt64, on: DS4LaunchTarget, streamingOn: Bool = false) -> String? {
+            model.residentMemoryWarning(
+                ssdStreamingEnabled: streamingOn,
+                target: on,
+                physicalMemoryBytes: gib * gibibyte
+            )
+        }
+
+        XCTAssertTrue(try XCTUnwrap(warning(q4, 64, on: streaming)).contains("Turn on SSD streaming"))
+        XCTAssertTrue(try XCTUnwrap(warning(q4, 64, on: target())).contains("update ds4-server"))
+        XCTAssertNil(warning(q4, 64, on: streaming, streamingOn: true))
+        XCTAssertNil(warning(q4, 96, on: streaming))
+        XCTAssertNil(warning(q2, 64, on: streaming))
+        XCTAssertNil(warning(.from(architecture: "glm5-next"), 64, on: streaming))
+    }
+
     func testInspectionReadsEachCapabilityFromTheExecutable() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("dsmenubar-target-\(UUID().uuidString)")

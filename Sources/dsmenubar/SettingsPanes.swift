@@ -134,6 +134,7 @@ extension SettingsView {
                         .font(.footnote)
                         .foregroundStyle(.orange)
                 }
+                residentMemoryWarningLabel
                 if modelProfile.supportsVision {
                     Toggle("Use vision encoder", isOn: $draft.visionEnabled)
                     pathRow("Vision encoder", field: .vision, errorKey: .visionPath, help: visionHelp)
@@ -337,6 +338,7 @@ extension SettingsView {
                         validationLabel(error, for: .ssdStreamingEnabled)
                     }
                 }
+                residentMemoryWarningLabel
                 if !modelProfile.supportsSSDStreaming(on: launchTarget) && draft.ssdStreamingEnabled {
                     Button("Turn Off SSD Streaming") { draft.ssdStreamingEnabled = false }
                 }
@@ -701,6 +703,18 @@ extension SettingsView {
         }
     }
 
+    /// Informs without blocking Apply: the machine may still load the model.
+    @ViewBuilder
+    var residentMemoryWarningLabel: some View {
+        if let warning = modelProfile.residentMemoryWarning(
+            ssdStreamingEnabled: draft.ssdStreamingEnabled,
+            target: launchTarget
+        ) {
+            Label(warning, systemImage: "exclamationmark.triangle.fill")
+                .font(.footnote)
+                .foregroundStyle(.orange)
+        }
+    }
 
     /// A number with an optional `GB` suffix, shown grouped like an integer
     /// row and committed the same way.
