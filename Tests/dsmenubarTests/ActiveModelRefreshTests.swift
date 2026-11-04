@@ -56,7 +56,8 @@ final class ActiveModelRefreshTests: XCTestCase {
             inspected: ServerManager.InspectedProfiles(
                 model: profile,
                 support: .unavailable,
-                vision: .unavailable
+                vision: .unavailable,
+                launchTarget: .unknown
             ),
             history: history
         )
@@ -97,7 +98,8 @@ final class ActiveModelRefreshTests: XCTestCase {
                     kind: .qwen38,
                     architecture: "clip",
                     projectionDimension: nil
-                )
+                ),
+                launchTarget: .unknown
             ),
             history: history
         )
@@ -160,7 +162,8 @@ final class ActiveModelRefreshTests: XCTestCase {
             inspected: .init(
                 model: profile,
                 support: .unavailable,
-                vision: .unavailable
+                vision: .unavailable,
+                launchTarget: .unknown
             ),
             history: history
         )
@@ -194,7 +197,7 @@ final class ActiveModelRefreshTests: XCTestCase {
         let history = await harness.manager.inspectModelHistory(for: draft, model: profile)
         let result = harness.manager.applyConfiguration(
             draft,
-            inspected: .init(model: profile, support: .unavailable, vision: .unavailable),
+            inspected: .init(model: profile, support: .unavailable, vision: .unavailable, launchTarget: .unknown),
             history: history
         )
 
@@ -231,7 +234,7 @@ final class ActiveModelRefreshTests: XCTestCase {
 
         let result = harness.manager.applyConfiguration(
             candidate,
-            inspected: .init(model: profile, support: .unavailable, vision: .unavailable),
+            inspected: .init(model: profile, support: .unavailable, vision: .unavailable, launchTarget: .unknown),
             history: history
         )
 
@@ -257,7 +260,8 @@ final class ActiveModelRefreshTests: XCTestCase {
             inspected: ServerManager.InspectedProfiles(
                 model: primed,
                 support: .unavailable,
-                vision: .unavailable
+                vision: .unavailable,
+                launchTarget: .unknown
             ),
             history: history
         )
@@ -305,7 +309,8 @@ final class ActiveModelRefreshTests: XCTestCase {
             inspected: ServerManager.InspectedProfiles(
                 model: primed,
                 support: .unavailable,
-                vision: .unavailable
+                vision: .unavailable,
+                launchTarget: .unknown
             ),
             history: history
         )

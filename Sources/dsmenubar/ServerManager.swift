@@ -701,7 +701,7 @@ final class ServerManager: ObservableObject {
         let model: DS4ModelProfile
         let support: DS4SupportProfile
         let vision: DS4VisionProfile
-        var launchTarget: DS4LaunchTarget? = nil
+        let launchTarget: DS4LaunchTarget
     }
 
     /// The outgoing configuration and its model family, used to remember
@@ -733,16 +733,17 @@ final class ServerManager: ObservableObject {
     /// new command line takes effect; a stopped server uses it on its next start.
     ///
     /// `inspected` is the profiles for `newConfig`'s model, support, and vision
-    /// paths. Passing nil re-reads them here, on whatever thread called — which
-    /// for a Settings Apply is the main one.
+    /// paths and its ds4-server. Passing nil re-reads them here, on whatever
+    /// thread called — which for a Settings Apply is the main one.
     ///
     /// `history` must describe the currently applied configuration. The caller
     /// can discard it if the draft changes while its inspection is in flight.
     ///
-    /// Passing the profiles in reads no GGUF header at this point, so a GGUF
-    /// replaced between inspection and this call is validated against the
-    /// older profile. `ProcessManager.launch` re-reads and re-validates every path
-    /// before the child starts, which is where that is caught.
+    /// Passing the profiles in reads no file at this point, so a GGUF or
+    /// executable replaced between inspection and this call is validated
+    /// against the older result. `ProcessManager.launch` re-reads and
+    /// re-validates every path before the child starts, which is where that
+    /// is caught.
     @discardableResult
     func applyConfiguration(
         _ newConfig: ServerConfiguration.Config,

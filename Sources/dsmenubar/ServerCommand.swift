@@ -133,6 +133,8 @@ enum DS4ServerCommand {
             }
         }
 
+        // Validation refuses streaming on a target that lacks it, so a launch
+        // never reaches this gate closed; only the preview does.
         if configuration.ssdStreamingEnabled && modelProfile.supportsSSDStreaming(on: target) {
             args.append("--ssd-streaming")
             if configuration.ssdStreamingCold && !modelProfile.fillsSSDExpertCacheOnDemand {
